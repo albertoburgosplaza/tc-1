@@ -1,14 +1,15 @@
-# RAG Chatbot System - Production Deployment Checklist
+# RAG Chatbot with Google Gemini - Production Deployment Checklist
 
 ## Pre-Deployment Requirements
 
 ### System Requirements
 - [ ] **Docker Engine** >= 20.10.0
 - [ ] **Docker Compose** >= 2.0.0
-- [ ] **Available RAM**: Minimum 8GB (Recommended 16GB)
-- [ ] **Available CPU**: Minimum 4 cores
-- [ ] **Available Disk**: Minimum 20GB free space
-- [ ] **Network**: Internet access for initial setup
+- [ ] **Available RAM**: Minimum 2GB (Recommended 4GB)
+- [ ] **Available CPU**: Minimum 2 cores
+- [ ] **Available Disk**: Minimum 5GB free space
+- [ ] **Network**: Internet access for Google API
+- [ ] **Google API Key**: Valid API key for Gemini access
 
 ### Security Prerequisites
 - [ ] **Firewall Configuration**: Only ports 7860 and 8080 open externally

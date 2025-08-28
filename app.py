@@ -13,117 +13,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import asyncio
 from functools import partial
 
-from langchain_community.chat_models import ChatOllama
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Qdrant
 from langchain_google_genai import ChatGoogleGenerativeAI
 from qdrant_client import QdrantClient
+from embedding_factory import EmbeddingFactory
 
 # Configurar logging estructurado
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG if os.getenv("DEBUG", "false").lower() == "true" else logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
-class CachedEmbeddings:
-    """
-    Wrapper para HuggingFaceEmbeddings que añade caché LRU para queries repetidas.
-    Reduce el costo computacional de recalcular embeddings para consultas frecuentes.
-    """
-    def __init__(self, base_embeddings: HuggingFaceEmbeddings, cache_size: int = 200):
-        """
-        Args:
-            base_embeddings: Instancia de HuggingFaceEmbeddings base
-            cache_size: Número máximo de embeddings a mantener en caché
-        """
-        self.base_embeddings = base_embeddings
-        self.cache_size = cache_size
-        
-        # Contador de hits/misses para métricas
-        self.cache_hits = 0
-        self.cache_misses = 0
-        
-        logger.info(f"Initialized embedding cache with size limit: {cache_size}")
-    
-    def _get_text_hash(self, text: str) -> str:
-        """Genera hash único para el texto de consulta"""
-        return hashlib.md5(text.encode('utf-8')).hexdigest()
-    
-    @lru_cache(maxsize=None)  # El límite se maneja por el tamaño de cache_size
-    def _cached_embed_query(self, text_hash: str, text: str) -> tuple:
-        """
-        Método interno con caché LRU para embeddings de consultas individuales.
-        Usa hash como clave primaria pero necesita el texto para el cálculo real.
-        """
-        logger.debug(f"Cache miss for query hash: {text_hash[:8]}...")
-        self.cache_misses += 1
-        embedding = self.base_embeddings.embed_query(text)
-        return tuple(embedding)  # tuple es hasheable para LRU cache
-    
-    def embed_query(self, text: str) -> List[float]:
-        """
-        Embebida una consulta con caché automático
-        
-        Args:
-            text: Texto de la consulta a embebir
-            
-        Returns:
-            Lista de floats representando el embedding
-        """
-        text_hash = self._get_text_hash(text)
-        
-        try:
-            # Intentar obtener del caché
-            cached_result = self._cached_embed_query(text_hash, text)
-            
-            # Verificar si es un cache hit (el LRU cache no provee esta info directamente)
-            if hasattr(self._cached_embed_query, 'cache_info'):
-                current_info = self._cached_embed_query.cache_info()
-                if current_info.hits > self.cache_hits:
-                    self.cache_hits = current_info.hits
-                    logger.debug(f"Cache hit for query hash: {text_hash[:8]}...")
-            
-            # Gestionar tamaño del caché manualmente
-            cache_info = self._cached_embed_query.cache_info()
-            if cache_info.currsize > self.cache_size:
-                # Limpiar parte del caché si excede el límite
-                self._cached_embed_query.cache_clear()
-                logger.info(f"Cache cleared due to size limit ({cache_info.currsize} > {self.cache_size})")
-                # Recalcular después del clear
-                cached_result = self._cached_embed_query(text_hash, text)
-            
-            return list(cached_result)
-            
-        except Exception as e:
-            logger.error(f"Error in embedding cache: {e}")
-            # Fallback al embedding directo sin caché
-            return self.base_embeddings.embed_query(text)
-    
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """
-        Embebe múltiples documentos (sin caché, típicamente usado solo durante ingesta)
-        """
-        return self.base_embeddings.embed_documents(texts)
-    
-    def get_cache_stats(self) -> Dict:
-        """Retorna estadísticas del caché para monitoreo"""
-        cache_info = self._cached_embed_query.cache_info()
-        return {
-            "hits": cache_info.hits,
-            "misses": cache_info.misses,
-            "current_size": cache_info.currsize,
-            "max_size": self.cache_size,
-            "hit_rate": cache_info.hits / (cache_info.hits + cache_info.misses) if (cache_info.hits + cache_info.misses) > 0 else 0.0
-        }
-    
-    def clear_cache(self):
-        """Limpia completamente el caché"""
-        self._cached_embed_query.cache_clear()
-        self.cache_hits = 0
-        self.cache_misses = 0
-        logger.info("Embedding cache cleared manually")
 
 class ParallelRetriever:
     """
@@ -192,16 +94,12 @@ class ParallelRetriever:
         return results
 
 # Entorno
-OLLAMA_URL = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
-LLM_MODEL = os.getenv("LLM_MODEL", "mistral:7b-instruct")
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")  # ollama o google
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "google")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 COLLECTION = os.getenv("COLLECTION_NAME", "corpus_pdf")
 PYEXEC_URL = os.getenv("PYEXEC_URL", "http://localhost:8001")
 
-# Configuración de caché de embeddings
-EMBEDDING_CACHE_SIZE = int(os.getenv("EMBEDDING_CACHE_SIZE", "200"))
 
 # Configuración optimizada de conexiones HTTP
 HTTP_TIMEOUT_FAST = 3     # Para health checks rápidos
@@ -262,48 +160,39 @@ health_session = create_optimized_session(timeout=HTTP_TIMEOUT_FAST, max_retries
 api_session = create_optimized_session(timeout=HTTP_TIMEOUT_NORMAL, max_retries=HTTP_MAX_RETRIES)  # APIs normales
 compute_session = create_optimized_session(timeout=HTTP_TIMEOUT_NORMAL, max_retries=1)  # Computación (pyexec)
 
-def create_llm(provider="ollama", model=None):
+def create_llm(provider="google", model=None):
     """Crea una instancia de LLM según el proveedor especificado"""
     if provider.lower() == "google":
         if not GOOGLE_API_KEY:
-            logger.error("Google API key not found. Falling back to Ollama.")
-            provider = "ollama"
-        else:
-            # Usar Gemini 2.5 Flash Lite por defecto
-            gemini_model = model or "gemini-2.5-flash-lite"
-            return ChatGoogleGenerativeAI(
-                model=gemini_model,
-                temperature=0.05,
-                google_api_key=GOOGLE_API_KEY,
-                max_tokens=512,
-                convert_system_message_to_human=True  # Gemini no soporta system messages
+            raise ValueError(
+                "GOOGLE_API_KEY is required for Google provider. "
+                "Please configure it in environment variables."
             )
-    
-    # Fallback a Ollama (comportamiento por defecto)
-    ollama_model = model or LLM_MODEL
-    return ChatOllama(
-        model=ollama_model, 
-        temperature=0.05,
-        base_url=OLLAMA_URL,
-        num_predict=512,
-        repeat_penalty=1.1,
-        top_k=40,
-        top_p=0.9
-    )
+        # Usar Gemini 2.5 Flash Lite por defecto
+        gemini_model = model or "gemini-2.5-flash-lite"
+        return ChatGoogleGenerativeAI(
+            model=gemini_model,
+            temperature=0.05,
+            google_api_key=GOOGLE_API_KEY,
+            max_tokens=512,
+            convert_system_message_to_human=True  # Gemini no soporta system messages
+        )
+    else:
+        raise ValueError(f"Unsupported LLM provider: {provider}. Only 'google' is supported.")
 
 # Variables globales para el modelo actual
 current_llm = None
 current_provider = LLM_PROVIDER
-current_model = LLM_MODEL if LLM_PROVIDER == "ollama" else "gemini-2.5-flash-lite"
+current_model = "gemini-2.5-flash-lite"
 
-def switch_llm(provider, model_name=None):
+def switch_llm(provider="google", model_name=None):
     """Cambia el modelo LLM dinámicamente"""
     global current_llm, current_provider, current_model
     
     logger.info(f"Switching LLM from {current_provider} to {provider}")
     
     try:
-        new_model = model_name or (LLM_MODEL if provider == "ollama" else "gemini-2.5-flash-lite")
+        new_model = model_name or "gemini-2.5-flash-lite"
         new_llm = create_llm(provider, new_model)
         
         # Test básico del nuevo modelo
@@ -326,30 +215,74 @@ try:
     current_llm = create_llm(LLM_PROVIDER)
     logger.info(f"Successfully initialized {LLM_PROVIDER} model: {current_model}")
 except Exception as e:
-    logger.error(f"Failed to initialize {LLM_PROVIDER} model: {str(e)}")
-    # Fallback a Ollama si falla el proveedor por defecto
-    if LLM_PROVIDER != "ollama":
-        logger.info("Falling back to Ollama...")
-        current_llm = create_llm("ollama")
-        current_provider = "ollama"
-        current_model = LLM_MODEL
-    else:
-        # Si falla Ollama también, esto es un error crítico
-        logger.critical("Failed to initialize any LLM provider")
-        raise e
+    logger.critical(f"Failed to initialize {LLM_PROVIDER} model: {str(e)}")
+    logger.critical("Make sure GOOGLE_API_KEY is configured correctly")
+    raise e
 
 llm = current_llm  # Mantener compatibilidad con código existente
 
-# Inicializar embeddings base
-base_emb = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-# NOTA: Temporalmente usando embeddings sin cache hasta corregir CachedEmbeddings
-# emb = CachedEmbeddings(base_emb, cache_size=EMBEDDING_CACHE_SIZE)
-emb = base_emb  # Usar directamente sin cache por ahora
+# Inicializar embeddings usando factory configurable
+# Obtener modelo de variables de entorno o usar Gemini por defecto
+embedding_model = os.getenv("EMBEDDING_MODEL", "models/embedding-001")
+embedding_provider = os.getenv("EMBEDDING_PROVIDER", "google")
+
+logger.info(f"Initializing embeddings: {embedding_model} ({embedding_provider})")
+base_emb = EmbeddingFactory.create_embedding(
+    model_name=embedding_model,
+    provider=embedding_provider,
+    task_type="retrieval_document"  # Optimizado para RAG
+)
+
+# Usar embeddings de Google directamente (son API calls, no necesitan cache local)
+emb = base_emb
 
 client = QdrantClient(url=QDRANT_URL)
-# Usar embeddings en lugar de embedding_function (deprecated)
-vectordb = Qdrant(client=client, collection_name=COLLECTION, embeddings=emb)
-base_retriever = vectordb.as_retriever(search_kwargs={"k": 5})
+
+# Custom retriever that directly uses Qdrant client to handle metadata properly
+class CustomQdrantRetriever:
+    """Custom retriever that properly handles Qdrant payload metadata"""
+    
+    def __init__(self, client, collection_name, embeddings, k=15):
+        self.client = client
+        self.collection_name = collection_name
+        self.embeddings = embeddings
+        self.k = k
+    
+    def get_relevant_documents(self, query: str, k: int = None):
+        """Get relevant documents with proper metadata handling"""
+        from langchain_core.documents import Document
+        
+        # Use provided k or default
+        search_k = k if k is not None else self.k
+        
+        # Generate embedding for query
+        query_embedding = self.embeddings.embed_query(query)
+        
+        # Search in Qdrant
+        search_result = self.client.query_points(
+            collection_name=self.collection_name,
+            query=query_embedding,
+            limit=search_k,
+            with_payload=True
+        )
+        
+        # Convert to LangChain documents
+        documents = []
+        for result in search_result.points:
+            # Extract metadata and content from payload
+            payload = result.payload.copy()  # Make a copy to avoid modifying original
+            page_content = payload.pop('page_content', '')  # Remove page_content from metadata
+            
+            # Create document with proper metadata
+            doc = Document(
+                page_content=page_content,
+                metadata=payload  # All other fields as metadata
+            )
+            documents.append(doc)
+        
+        return documents
+
+base_retriever = CustomQdrantRetriever(client, COLLECTION, emb, k=15)
 
 # Crear retriever paralelo que envuelve el retriever base
 retriever = ParallelRetriever(base_retriever, max_workers=MAX_RETRIEVAL_WORKERS)
@@ -780,15 +713,29 @@ def answer_with_rag(query: str, history: List[Tuple[str, str]]):
             doc_title = d.metadata.get('title', 'Documento desconocido')
             page_num = d.metadata.get('page', 'N/A')
             
-            context_part = f"""[{i+1}] {doc_title} (p.{page_num}):
-{d.page_content.strip()}"""
+            # Formato más claro para el contexto
+            context_part = f"""DOCUMENTO {i+1}: {doc_title}
+PÁGINA: {page_num}
+CONTENIDO:
+{d.page_content.strip()}
+---"""
             
             context_parts.append(context_part)
         
         context = "\n\n".join(context_parts)
         
         # Sistema prompt optimizado
-        sys = """Responde usando SOLO el contexto proporcionado. Si no hay información, responde: "No hay información suficiente". Cita fuentes: [Documento - Página]. Sin inferencias ni conocimiento previo. Respuestas concisas."""
+        sys = """Eres un asistente experto que responde preguntas basándose ÚNICAMENTE en el contexto proporcionado. 
+
+INSTRUCCIONES IMPORTANTES:
+1. Lee TODO el contexto cuidadosamente antes de responder
+2. Busca información relevante en TODOS los documentos proporcionados
+3. Si encuentras nombres de empresas, listados, porcentajes o cualquier dato específico, DEBES mencionarlos
+4. Solo responde "No hay información suficiente" si después de leer TODO el contexto no encuentras NADA relacionado
+5. SIEMPRE cita las fuentes específicas donde encontraste la información
+6. Si la pregunta es sobre empresas del S&P 500 y ves una lista de "POSICIONES" o empresas con porcentajes, DEBES listarlas
+
+RECUERDA: Tu trabajo es extraer y presentar TODA la información relevante del contexto."""
 
         hist_text = fmt_hist(history[-SLIDING_WINDOW_TURNS:], enhanced=True)
         prompt = f"""{sys}
@@ -805,9 +752,25 @@ Respuesta:"""
         
         t0 = time.time()
         logger.info("Invoking LLM for RAG response")
+        
+        # Debug: Log context size and first part
+        logger.debug(f"Context length: {len(context)} chars, docs: {len(docs)}")
+        
+        # Log what documents were retrieved
+        for i, doc in enumerate(docs[:5], 1):
+            page = doc.metadata.get('page', 'N/A')
+            title = doc.metadata.get('title', 'Unknown')
+            content_preview = doc.page_content[:100] if hasattr(doc, 'page_content') else 'No content'
+            logger.debug(f"Doc {i}: Page {page}, Title: {title}, Content: {content_preview}...")
+        
+        logger.debug(f"Query: {query}")
+        
         resp = current_llm.invoke(prompt).content.strip()
         latency = time.time() - t0
         rag_latency_sum += latency
+        
+        # Debug: Log response
+        logger.debug(f"LLM response: {resp[:200]}")
         logger.info(f"RAG response generated - latency: {latency:.3f}s, response_length: {len(resp)}")
         
         # Generar citas mejoradas con ranking de relevancia (top 1-3 fuentes)
@@ -819,8 +782,13 @@ Respuesta:"""
             page = doc.metadata.get('page', 'N/A')
             source = doc.metadata.get('source', title)
             
+            # Extraer nombre del documento de manera más amigable
+            display_title = title.replace('_', ' ').title()
+            if len(display_title) > 50:
+                display_title = display_title[:47] + "..."
+            
             # Formato mejorado de cita con ranking
-            citation = f"[{i}] {title} (pág. {page})"
+            citation = f"[{i}] {display_title} (pág. {page})"
             citations.append(citation)
         
         # Formato final de citas
@@ -991,44 +959,20 @@ def chat(user_text, state):
     return history, history
 
 with gr.Blocks() as demo:
-    gr.Markdown("## Chatbot RAG (microservicios) • Qdrant + Ollama/Gemini + PyExec")
+    gr.Markdown("## Chatbot RAG (microservicios) • Qdrant + Google Gemini + PyExec")
     
-    with gr.Row():
-        with gr.Column(scale=3):
-            provider_selector = gr.Radio(
-                choices=["ollama", "google"], 
-                value=current_provider,
-                label="Proveedor LLM",
-                info="Selecciona el proveedor del modelo de lenguaje"
-            )
-        with gr.Column(scale=7):
-            model_info = gr.Textbox(
-                value=f"Modelo actual: {current_model} ({current_provider})",
-                label="Estado del modelo",
-                interactive=False
-            )
+    # Información del modelo (solo informativo, no editable)
+    gr.Markdown(f"**🤖 Modelo**: {current_model} • **⚡ Proveedor**: Google Gemini")
     
     chatbox = gr.Chatbot(height=420)
     msg = gr.Textbox(placeholder="Pregunta aquí... (o 'python: 1+2')", autofocus=True)
     state = gr.State([])
 
-    def change_provider(provider):
-        global current_llm, current_provider, current_model
-        
-        if provider == current_provider:
-            return f"Modelo actual: {current_model} ({current_provider})"
-        
-        success = switch_llm(provider)
-        if success:
-            return f"✅ Modelo actual: {current_model} ({current_provider})"
-        else:
-            return f"❌ Error al cambiar a {provider}. Usando: {current_model} ({current_provider})"
 
     def respond(message, history):
         new_hist, state_out = chat(message, history)
         return new_hist, state_out, ""
 
-    provider_selector.change(change_provider, [provider_selector], [model_info])
     msg.submit(respond, [msg, state], [chatbox, state, msg])
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 langchain>=0.2
 langchain-community
 langchain-text-splitters
-sentence-transformers
+langchain-google-genai
 qdrant-client
 pypdf
 pymupdf

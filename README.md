@@ -1,16 +1,15 @@
 
-# Chatbot RAG (OSS/local) — Microservicios con Docker Compose
+# Chatbot RAG con Google Gemini — Microservicios con Docker Compose
 
-Sistema de chatbot local con Retrieval Augmented Generation (RAG) que permite consultar documentos PDF y ejecutar código Python de forma segura. El sistema utiliza una arquitectura de microservicios con Docker Compose para facilitar el despliegue y escalabilidad.
+Sistema de chatbot con Retrieval Augmented Generation (RAG) que permite consultar documentos PDF y ejecutar código Python de forma segura. Utiliza Google Gemini como modelo de lenguaje y una arquitectura de microservicios con Docker Compose para facilitar el despliegue y escalabilidad.
 
 ## 🏗️ Arquitectura
 
 **Servicios principales:**
 - **qdrant**: Base de datos vectorial para almacenamiento de embeddings
-- **ollama**: Motor de LLM local (soporta múltiples modelos)
 - **pyexec**: Microservicio para ejecutar expresiones Python de forma segura
-- **app**: Interfaz web con Gradio + LangChain que orquesta RAG y ejecuta Python
-- **ingest**: Job de procesamiento para ingestar PDFs en Qdrant
+- **app**: Interfaz web con Gradio + LangChain + Google Gemini que orquesta RAG
+- **ingest**: Job de procesamiento para ingestar PDFs en Qdrant con embeddings de Google
 
 ## ⚡ Inicio Rápido
 
@@ -19,8 +18,9 @@ Sistema de chatbot local con Retrieval Augmented Generation (RAG) que permite co
 **Obligatorios:**
 - Docker (versión 20.10 o superior)
 - Docker Compose (versión 2.0 o superior)
-- Mínimo 4GB RAM disponible (2GB para llama3.2:1b + servicios)
-- Al menos 8GB de espacio en disco (reducido por llama3.2:1b)
+- **Google API Key** (para acceso a Gemini)
+- Mínimo 2GB RAM disponible
+- Al menos 2GB de espacio en disco
 
 **Verificar instalación:**
 ```bash
@@ -29,9 +29,14 @@ docker --version && docker compose version
 
 ### Instalación Automática
 
-Para un setup completo en menos de 30 minutos:
+Para un setup completo en menos de 5 minutos:
 
-1. **Clonar y preparar:**
+1. **Configurar API Key:**
+   ```bash
+   export GOOGLE_API_KEY="tu_api_key_aqui"
+   ```
+
+2. **Clonar y preparar:**
    ```bash
    git clone <repository-url>
    cd turingchallenge-reto-1
@@ -59,46 +64,32 @@ wget -P docs/ "https://example.com/sample.pdf"
 - Formatos soportados: PDF únicamente
 - Mínimo contenido por documento: 10 caracteres
 
-#### 2. Levantar Servicios Base
+#### 2. Configurar Google API Key
 
 ```bash
-# Construir y levantar servicios (orden importante)
-docker compose up -d --build qdrant ollama pyexec app
+# Configurar variable de entorno
+export GOOGLE_API_KEY="tu_google_api_key_aqui"
+
+# O crear archivo .env
+echo "GOOGLE_API_KEY=tu_google_api_key_aqui" > .env
+```
+
+**Cómo obtener Google API Key:**
+1. Ir a [Google AI Studio](https://makersuite.google.com/app/apikey)
+2. Crear una nueva API key
+3. Habilitar Generative AI API
+
+#### 3. Levantar Servicios
+
+```bash
+# Construir y levantar servicios
+docker compose up -d --build qdrant pyexec app
 
 # Verificar que los servicios están saludables
 docker compose ps
 ```
 
-**Tiempo estimado:** 5-10 minutos (primera vez)
-
-#### 3. Descargar Modelo LLM
-
-```bash
-# Modelo configurado por defecto (1B parámetros, ~1.3GB)
-docker exec -it ollama ollama pull llama3.2:1b
-
-# Modelos alternativos más potentes
-docker exec -it ollama ollama pull mistral:7b-instruct      # ~4GB
-docker exec -it ollama ollama pull llama3.1:8b-instruct     # ~4.7GB
-
-# Verificar modelo descargado
-docker exec -it ollama ollama list
-```
-
-**Tiempo estimado:** 2-5 minutos para llama3.2:1b (según conexión)
-
-#### 📋 Sobre el modelo llama3.2:1b
-
-**Ventajas:**
-- 🚀 **Velocidad:** Respuestas ultra-rápidas (<2 segundos)
-- 💾 **Eficiencia:** Solo ~1.3GB de almacenamiento
-- ⚡ **Recursos:** Funciona con 2GB RAM
-- 🔧 **Optimización:** Ideal para RAG y consultas directas
-
-**Limitaciones:**
-- Capacidades de razonamiento reducidas vs modelos 7B+
-- Mejor para consultas factuales que para análisis complejos
-- Recomendado cambiar a mistral:7b-instruct para tareas avanzadas
+**Tiempo estimado:** 3-5 minutos (primera vez)
 
 #### 4. Procesar Documentos
 
@@ -186,11 +177,9 @@ Para ejemplos detallados con respuestas esperadas, consulta **[EXAMPLES.md](EXAM
 
 #### Servicio App
 ```yaml
-# Configuración del LLM
-LLM_MODEL: llama3.2:1b                   # Modelo de Ollama (1B parámetros, optimizado para velocidad)
-LLM_PROVIDER: ollama                     # Proveedor: ollama o google
-OLLAMA_BASE_URL: http://ollama:11434     # URL interna de Ollama
-GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"    # API Key de Google AI (para Gemini)
+# Configuración del LLM (solo Google Gemini)
+LLM_PROVIDER: google                     # Único proveedor soportado
+GOOGLE_API_KEY: "${GOOGLE_API_KEY}"      # API Key de Google AI (REQUERIDA)
 
 # Configuración de Qdrant
 QDRANT_URL: http://qdrant:6333           # URL interna de Qdrant
@@ -218,9 +207,10 @@ MAX_EXPR_COMPLEXITY: 100                 # Límite de complejidad AST
 
 #### Servicio Ingest
 ```yaml
-# Configuración de embeddings
-EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
-DOCUMENTS_DIR: /app/docs                 # Carpeta interna de documentos
+# Configuración de embeddings (Google)
+EMBEDDING_MODEL: models/embedding-001    # Modelo de Google para embeddings
+EMBEDDING_PROVIDER: google              # Proveedor de embeddings
+DOCUMENTS_DIR: /app/docs                # Carpeta interna de documentos
 
 # Procesamiento de PDFs
 MAX_PDF_SIZE_MB: 100                     # Tamaño máximo por PDF
@@ -229,53 +219,32 @@ CHUNK_OVERLAP: 180                       # Solapamiento entre chunks
 MIN_CONTENT_LENGTH: 10                   # Contenido mínimo por chunk
 ```
 
-### Cambiar Modelo LLM
+### Modelo LLM Configurado
 
-#### Opción 1: Usar Gemini 2.5 Flash Lite (Google AI)
+Este sistema utiliza únicamente **Google Gemini 2.5 Flash Lite** como modelo de lenguaje:
 
-1. **Configurar API Key:**
-   ```bash
-   # Crear archivo .env
-   echo "GOOGLE_API_KEY=your_google_api_key_here" >> .env
-   ```
+**Características:**
+- ⚡ **Ultra velocidad:** Respuestas en milisegundos
+- 🌐 **API-based:** Sin modelos locales, menor uso de recursos
+- 🔧 **Pre-configurado:** Listo para usar con tu Google API Key
+- 🌍 **Multilengüe:** Soporte nativo para múltiples idiomas
 
-2. **Usar desde la interfaz web:**
-   - Accede a http://localhost:7860
-   - Selecciona "google" en el selector "Proveedor LLM"
-   - El sistema cambiará automáticamente a Gemini 2.5 Flash Lite
+**Configuración requerida:**
+```bash
+# Solo necesitas tu Google API Key
+export GOOGLE_API_KEY="tu_api_key_aqui"
+```
 
-**Ventajas de Gemini:**
-- ⚡ **Ultra velocidad:** Modelo optimizado para respuestas rápidas
-- 🌐 **Sin instalación local:** No requiere descargar modelos
-- 🔧 **Auto-configurado:** Listo para usar con tu API key
+### Modelo de Embeddings Configurado
 
-#### Opción 2: Usar modelos Ollama locales
+El sistema utiliza **Google `models/embedding-001`** para generar embeddings:
 
-1. **Descargar nuevo modelo:**
-   ```bash
-   # Modelo más potente (recomendado para tareas complejas)
-   docker exec -it ollama ollama pull mistral:7b-instruct
-   # o
-   docker exec -it ollama ollama pull llama3.1:8b-instruct
-   ```
+**Características:**
+- 📊 **Alta calidad:** 768 dimensiones optimizadas para RAG
+- 🚀 **Rápido:** Generación via API sin procesamiento local
+- 🔄 **Consistente:** Embeddings estables entre sesiones
 
-2. **Actualizar configuración:**
-   ```bash
-   # Editar docker-compose.yml
-   # Cambiar LLM_MODEL: mistral:7b-instruct
-   # (por defecto está configurado llama3.2:1b para velocidad)
-   ```
-
-3. **Reiniciar aplicación:**
-   ```bash
-   docker compose restart app
-   ```
-
-### Cambiar Modelo de Embeddings
-
-⚠️ **Importante:** Cambiar embeddings requiere re-ingestión completa
-
-1. **Editar configuración:**
+**Configuración actual:**
    ```yaml
    # En docker-compose.yml servicio ingest
    EMBEDDING_MODEL: sentence-transformers/all-mpnet-base-v2

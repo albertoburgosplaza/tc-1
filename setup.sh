@@ -14,16 +14,13 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration defaults
-DEFAULT_MODEL="mistral:7b-instruct"
 DEFAULT_TIMEOUT=30
 DOCS_FOLDER="./docs"
 LOG_FILE="setup.log"
 
 # Flags
 SILENT_MODE=false
-SKIP_MODEL_DOWNLOAD=false
 SKIP_INGEST=false
-SELECTED_MODEL="$DEFAULT_MODEL"
 FORCE_REINSTALL=false
 
 # Helper functions
@@ -61,23 +58,17 @@ USAGE:
 OPTIONS:
     -h, --help              Show this help message
     -s, --silent            Silent mode (minimal output)
-    -m, --model MODEL       Select LLM model (default: mistral:7b-instruct)
     -t, --timeout SECONDS   Timeout for service health checks (default: 30)
     -f, --force             Force reinstall (removes existing containers/volumes)
-    --skip-model            Skip model download
     --skip-ingest          Skip document ingestion
     --no-docs              Don't create docs folder
 
-AVAILABLE MODELS:
-    mistral:7b-instruct         # Default, balanced performance (~4GB)
-    mistral:7b-instruct-q4_0   # Quantized version (~3.8GB)
-    llama3.1:8b-instruct       # Alternative model (~4.7GB)
-    codellama:7b-instruct      # Code-focused model (~3.8GB)
+REQUIREMENTS:
+    GOOGLE_API_KEY          Required environment variable for Gemini AI
 
 EXAMPLES:
     ./setup.sh                              # Standard setup
-    ./setup.sh -m llama3.1:8b-instruct     # Use different model
-    ./setup.sh -s --skip-model              # Silent setup, skip model download
+    ./setup.sh -s                          # Silent setup
     ./setup.sh -f                          # Force clean reinstall
 
 EOF
@@ -94,20 +85,12 @@ parse_arguments() {
                 SILENT_MODE=true
                 shift
                 ;;
-            -m|--model)
-                SELECTED_MODEL="$2"
-                shift 2
-                ;;
             -t|--timeout)
                 DEFAULT_TIMEOUT="$2"
                 shift 2
                 ;;
             -f|--force)
                 FORCE_REINSTALL=true
-                shift
-                ;;
-            --skip-model)
-                SKIP_MODEL_DOWNLOAD=true
                 shift
                 ;;
             --skip-ingest)
@@ -272,14 +255,14 @@ build_and_start_services() {
     
     # Pull latest images first
     print_status "Pulling latest images..."
-    $COMPOSE_CMD pull qdrant ollama 2>/dev/null || true
+    $COMPOSE_CMD pull qdrant 2>/dev/null || true
     
     # Build and start base services
     print_status "Building custom services (this may take a few minutes)..."
     if [[ "$SILENT_MODE" == true ]]; then
-        $COMPOSE_CMD up -d --build qdrant ollama pyexec app > /dev/null 2>&1
+        $COMPOSE_CMD up -d --build qdrant pyexec app > /dev/null 2>&1
     else
-        $COMPOSE_CMD up -d --build qdrant ollama pyexec app
+        $COMPOSE_CMD up -d --build qdrant pyexec app
     fi
     
     print_success "Services started"
@@ -290,7 +273,7 @@ wait_for_services() {
     
     local max_attempts=$((DEFAULT_TIMEOUT * 2))  # 30 seconds = 60 attempts
     local attempt=1
-    local services=("qdrant" "ollama" "pyexec")
+    local services=("qdrant" "pyexec")
     
     while [[ $attempt -le $max_attempts ]]; do
         local all_healthy=true
@@ -323,52 +306,24 @@ wait_for_services() {
     $COMPOSE_CMD ps
     
     print_status "Recent logs:"
-    $COMPOSE_CMD logs --tail=10 qdrant ollama pyexec app
+    $COMPOSE_CMD logs --tail=10 qdrant pyexec app
     
     return 1
 }
 
-download_model() {
-    if [[ "$SKIP_MODEL_DOWNLOAD" == true ]]; then
-        print_status "Skipping model download as requested"
-        return 0
-    fi
+check_google_api_key() {
+    print_status "Checking Google API key..."
     
-    print_status "Downloading LLM model: $SELECTED_MODEL"
-    print_status "This may take 10-20 minutes depending on your connection..."
-    
-    # Check if model already exists
-    if docker exec ollama ollama list | grep -q "$SELECTED_MODEL" 2>/dev/null; then
-        print_success "Model $SELECTED_MODEL already exists, skipping download"
-        return 0
-    fi
-    
-    # Download model with progress tracking
-    print_status "Starting model download..."
-    if [[ "$SILENT_MODE" == true ]]; then
-        docker exec ollama ollama pull "$SELECTED_MODEL" > /dev/null 2>&1
-    else
-        docker exec ollama ollama pull "$SELECTED_MODEL"
-    fi
-    
-    # Verify model was downloaded
-    if docker exec ollama ollama list | grep -q "$SELECTED_MODEL" 2>/dev/null; then
-        print_success "Model $SELECTED_MODEL downloaded successfully"
-        
-        # Update docker-compose.yml if different model was selected
-        if [[ "$SELECTED_MODEL" != "$DEFAULT_MODEL" ]]; then
-            print_status "Updating docker-compose.yml with selected model..."
-            sed -i "s|LLM_MODEL: .*|LLM_MODEL: $SELECTED_MODEL|g" docker-compose.yml
-            print_success "Configuration updated"
-            
-            # Restart app service to pick up new model
-            print_status "Restarting app service..."
-            $COMPOSE_CMD restart app
-        fi
-    else
-        print_error "Model download failed"
+    if [[ -z "$GOOGLE_API_KEY" ]]; then
+        print_error "GOOGLE_API_KEY environment variable is not set"
+        print_status "Please set your Google API key:"
+        print_status "export GOOGLE_API_KEY='your_api_key_here'"
+        print_status "Or add it to your .env file"
         return 1
     fi
+    
+    print_success "Google API key is configured"
+    return 0
 }
 
 run_ingestion() {
@@ -445,9 +400,10 @@ show_final_status() {
     echo "  📊 Qdrant Dashboard: http://localhost:6333/dashboard"
     echo ""
     
-    # Show model information
-    echo "INSTALLED MODEL:"
-    docker exec ollama ollama list | grep "$SELECTED_MODEL" || echo "  Model information not available"
+    # Show LLM information
+    echo "LLM PROVIDER:"
+    echo "  🤖 Google Gemini 2.5 Flash Lite (API-based)"
+    echo "  📊 Embeddings: models/embedding-001"
     echo ""
     
     # Show document count
@@ -503,6 +459,7 @@ main() {
     check_system_requirements
     check_docker
     check_docker_compose
+    check_google_api_key || exit 1
     setup_directories
     cleanup_existing
     build_and_start_services
@@ -512,7 +469,6 @@ main() {
         exit 1
     fi
     
-    download_model
     run_ingestion
     
     if ! wait_for_app; then

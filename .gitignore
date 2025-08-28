@@ -24,10 +24,6 @@ node_modules/
 # OS specific
 .DS_Store
 
-# Task files
-tasks.json
-tasks/ 
-
 # Virtual environments
 venv/
 test_env/
@@ -45,3 +41,8 @@ docs/
 
 # reports
 *_report.json
+
+# Task files
+tasks.json
+tasks/
+.taskmaster 

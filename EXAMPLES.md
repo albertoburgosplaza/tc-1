@@ -357,7 +357,6 @@ curl -f http://localhost:8080/health
   "timestamp": "2024-08-27T12:00:00Z",
   "services": {
     "qdrant": "healthy",
-    "ollama": "healthy", 
     "pyexec": "healthy"
   }
 }

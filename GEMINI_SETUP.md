@@ -1,6 +1,6 @@
 # 🤖 Guía de Configuración Gemini 2.5 Flash Lite
 
-Esta guía explica cómo configurar y usar Gemini 2.5 Flash Lite como alternativa a Llama 3.2 1B en tu chatbot RAG.
+Esta guía explica cómo configurar Gemini 2.5 Flash Lite, el único modelo LLM soportado en este chatbot RAG.
 
 ## 🚀 Configuración Rápida
 

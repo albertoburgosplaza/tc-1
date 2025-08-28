@@ -45,40 +45,6 @@ services:
       timeout: 5s
       retries: 30
 
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ollama
-    restart: unless-stopped
-    deploy:
-      restart_policy:
-        condition: on-failure
-        delay: 5s
-        max_attempts: 5
-        window: 120s
-      resources:
-        limits:
-          memory: 3G
-          cpus: "2.0"
-          pids: 200
-        reservations:
-          memory: 2G
-          cpus: "1.0"
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    networks:
-      - rag_internal
-    security_opt:
-      - no-new-privileges:true
-    read_only: false  # Ollama needs to write model files
-    tmpfs:
-      - /tmp:size=1G,noexec,nosuid,nodev
-    healthcheck:
-      test: ["CMD-SHELL", "timeout 3s bash -c 'cat < /dev/null > /dev/tcp/localhost/11434'"]
-      interval: 10s
-      timeout: 5s
-      retries: 30
 
   pyexec:
     build:
@@ -156,17 +122,15 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
       pyexec:
         condition: service_healthy
     environment:
-      OLLAMA_BASE_URL: http://ollama:11434
-      LLM_MODEL: llama3.2:1b
-      LLM_PROVIDER: ollama
-      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      LLM_PROVIDER: google
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
       QDRANT_URL: http://qdrant:6333
       COLLECTION_NAME: corpus_pdf
+      EMBEDDING_MODEL: models/embedding-001
+      EMBEDDING_PROVIDER: google
       GRADIO_SERVER_NAME: 0.0.0.0
       GRADIO_SERVER_PORT: "7860"
       PYEXEC_URL: http://pyexec:8001
@@ -178,6 +142,7 @@ services:
       EMBEDDING_CACHE_SIZE: "200"
       PARALLEL_RETRIEVAL: "true"
       MAX_RETRIEVAL_WORKERS: "2"
+      DEBUG: "true"
     ports:
       - "7860:7860"
       - "8080:8080"
@@ -219,8 +184,10 @@ services:
     environment:
       QDRANT_URL: http://qdrant:6333
       COLLECTION_NAME: corpus_pdf
-      EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+      EMBEDDING_MODEL: models/embedding-001
+      EMBEDDING_PROVIDER: google
       DOCUMENTS_DIR: /app/docs
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
       # Configuración de procesamiento
       MAX_PDF_SIZE_MB: "100"
       CHUNK_SIZE: "1200"
@@ -242,4 +209,3 @@ services:
 
 volumes:
   qdrant_data:
-  ollama_data:
