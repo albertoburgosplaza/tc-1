@@ -129,8 +129,9 @@ services:
       GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
       QDRANT_URL: http://qdrant:6333
       COLLECTION_NAME: corpus_pdf
-      EMBEDDING_MODEL: models/embedding-001
-      EMBEDDING_PROVIDER: google
+      EMBEDDING_MODEL: jina-embeddings-v4
+      EMBEDDING_PROVIDER: jina
+      JINA_API_KEY: ${JINA_API_KEY}
       GRADIO_SERVER_NAME: 0.0.0.0
       GRADIO_SERVER_PORT: "7860"
       PYEXEC_URL: http://pyexec:8001
@@ -184,10 +185,11 @@ services:
     environment:
       QDRANT_URL: http://qdrant:6333
       COLLECTION_NAME: corpus_pdf
-      EMBEDDING_MODEL: models/embedding-001
-      EMBEDDING_PROVIDER: google
+      EMBEDDING_MODEL: jina-embeddings-v4
+      EMBEDDING_PROVIDER: jina
       DOCUMENTS_DIR: /app/docs
       GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      JINA_API_KEY: ${JINA_API_KEY}
       # Configuración de procesamiento
       MAX_PDF_SIZE_MB: "100"
       CHUNK_SIZE: "1200"

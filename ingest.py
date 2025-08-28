@@ -7,11 +7,11 @@ import multiprocessing
 
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Qdrant
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams
 from qdrant_client.http import models
+from embedding_factory import EmbeddingFactory
 
 # Configurar logging estructurado
 logging.basicConfig(
@@ -24,7 +24,9 @@ logger = logging.getLogger(__name__)
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 COLLECTION = os.getenv("COLLECTION_NAME", "corpus_pdf")
 DOCS_DIR = os.getenv("DOCUMENTS_DIR", "docs")
-EMB_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+# Configuración de embeddings (alineada con app.py)
+EMB_MODEL = os.getenv("EMBEDDING_MODEL", "models/embedding-001")
+EMB_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "google")
 
 # Configuración de procesamiento
 MAX_PDF_SIZE_MB = int(os.getenv("MAX_PDF_SIZE_MB", "100"))
@@ -233,9 +235,20 @@ def retry_operation(operation_name: str, operation_func, max_retries: int = 3, d
                 time.sleep(delay)
                 delay *= 2  # Backoff exponencial
 
-logger.info("Initializing embedding model and Qdrant client")
-emb = HuggingFaceEmbeddings(model_name=EMB_MODEL)
-dim = 384  # all-MiniLM-L6-v2 produce 384 dims
+logger.info(f"Initializing embedding model: {EMB_MODEL} ({EMB_PROVIDER})")
+# Usar factory para crear embeddings configurables con proveedor específico
+# Para documentos usar retrieval.passage con late chunking habilitado
+task_config = {
+    "task_type": "retrieval.passage" if EMB_PROVIDER == "jina" else "retrieval_document",
+    "late_chunking": True if EMB_PROVIDER == "jina" else False,
+}
+emb = EmbeddingFactory.create_embedding(
+    model_name=EMB_MODEL, 
+    provider=EMB_PROVIDER,
+    **task_config
+)
+# Obtener dimensiones del modelo seleccionado
+dim = EmbeddingFactory.get_model_dimensions(EMB_MODEL, EMB_PROVIDER)
 
 def create_qdrant_client():
     """Crear cliente Qdrant con manejo de errores"""
@@ -257,11 +270,16 @@ def setup_qdrant_collection():
     existing = {c.name for c in collections}
     if COLLECTION not in existing:
         logger.info(f"Creating new Qdrant collection: {COLLECTION}")
+        # Usar DOT distance si el proveedor es Jina (normalized=True)
+        # Usar COSINE para otros proveedores
+        distance_metric = Distance.DOT if EMB_PROVIDER == "jina" else Distance.COSINE
+        logger.info(f"Using distance metric: {distance_metric.name} for provider: {EMB_PROVIDER}")
+        
         client.create_collection(
             collection_name=COLLECTION,
-            vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+            vectors_config=VectorParams(size=dim, distance=distance_metric),
         )
-        logger.info(f"Collection {COLLECTION} created successfully")
+        logger.info(f"Collection {COLLECTION} created successfully with {dim} dimensions")
     else:
         logger.info(f"Using existing collection: {COLLECTION}")
 
@@ -293,10 +311,12 @@ def insert_vectors_to_qdrant():
             points = []
             for j, (text, metadata, embedding) in enumerate(zip(texts, metadatas, embeddings)):
                 point_id = i + j  # ID único para cada punto
+                # Combinar metadata con page_content
+                payload = {**metadata, "page_content": text}
                 points.append(models.PointStruct(
                     id=point_id,
                     vector=embedding,
-                    payload=metadata
+                    payload=payload
                 ))
             
             # Insertar puntos en Qdrant

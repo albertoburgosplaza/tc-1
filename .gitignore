@@ -42,7 +42,8 @@ docs/
 # reports
 *_report.json
 
+.taskmaster 
+
 # Task files
 tasks.json
-tasks/
-.taskmaster 
+tasks/ 

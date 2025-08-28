@@ -227,10 +227,15 @@ embedding_model = os.getenv("EMBEDDING_MODEL", "models/embedding-001")
 embedding_provider = os.getenv("EMBEDDING_PROVIDER", "google")
 
 logger.info(f"Initializing embeddings: {embedding_model} ({embedding_provider})")
+# Para queries usar retrieval.query sin late chunking
+query_task_config = {
+    "task_type": "retrieval.query" if embedding_provider == "jina" else "retrieval_document",
+    "late_chunking": False,  # Nunca usar late chunking en queries
+}
 base_emb = EmbeddingFactory.create_embedding(
     model_name=embedding_model,
     provider=embedding_provider,
-    task_type="retrieval_document"  # Optimizado para RAG
+    **query_task_config
 )
 
 # Usar embeddings de Google directamente (son API calls, no necesitan cache local)
