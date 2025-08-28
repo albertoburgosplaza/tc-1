@@ -1,0 +1,386 @@
+{
+  "metadata": {
+    "dataset_name": "RAG System Evaluation Dataset",
+    "version": "1.0",
+    "description": "Synthetic Q&A dataset for evaluating RAG system performance",
+    "created_date": "2025-08-27",
+    "total_questions": 20,
+    "evaluation_metrics": [
+      "precision_at_k",
+      "recall_at_k", 
+      "groundedness",
+      "relevance",
+      "response_quality"
+    ]
+  },
+  "evaluation_criteria": {
+    "precision_at_k_threshold": 0.7,
+    "recall_at_k_threshold": 0.6,
+    "groundedness_threshold": 0.8,
+    "relevance_threshold": 0.7,
+    "response_time_threshold_seconds": 3.0
+  },
+  "questions": [
+    {
+      "id": 1,
+      "question": "What is machine learning?",
+      "category": "definition",
+      "difficulty": "easy",
+      "expected_topics": ["machine learning", "artificial intelligence", "algorithms", "data"],
+      "expected_answer_contains": ["learning from data", "algorithms", "patterns", "predictions"],
+      "calculation_required": false,
+      "context_keywords": ["machine learning", "ML", "artificial intelligence", "AI"],
+      "expected_retrieval_sources": ["ai_basics", "ml_guide"],
+      "quality_metrics": {
+        "min_answer_length": 50,
+        "max_answer_length": 300,
+        "expected_precision_at_3": 0.8,
+        "expected_groundedness": 0.9
+      }
+    },
+    {
+      "id": 2,
+      "question": "How do neural networks work?",
+      "category": "explanation", 
+      "difficulty": "medium",
+      "expected_topics": ["neural networks", "neurons", "layers", "weights", "backpropagation"],
+      "expected_answer_contains": ["neurons", "layers", "weights", "activation", "learning"],
+      "calculation_required": false,
+      "context_keywords": ["neural networks", "deep learning", "neurons", "layers"],
+      "expected_retrieval_sources": ["neural_networks", "deep_learning"],
+      "quality_metrics": {
+        "min_answer_length": 80,
+        "max_answer_length": 400,
+        "expected_precision_at_3": 0.7,
+        "expected_groundedness": 0.8
+      }
+    },
+    {
+      "id": 3,
+      "question": "Calculate the square root of 144",
+      "category": "calculation",
+      "difficulty": "easy",
+      "expected_topics": ["mathematics", "square root"],
+      "expected_answer_contains": ["12", "square root", "144"],
+      "calculation_required": true,
+      "expected_calculation": "sqrt(144)",
+      "expected_result": 12.0,
+      "context_keywords": ["square root", "mathematics", "calculation"],
+      "expected_retrieval_sources": ["math_basics"],
+      "quality_metrics": {
+        "min_answer_length": 20,
+        "max_answer_length": 150,
+        "expected_precision_at_3": 0.9,
+        "expected_groundedness": 1.0,
+        "calculation_accuracy_required": true
+      }
+    },
+    {
+      "id": 4,
+      "question": "What are embeddings in NLP?",
+      "category": "technical_concept",
+      "difficulty": "medium",
+      "expected_topics": ["embeddings", "NLP", "vectors", "semantic", "representation"],
+      "expected_answer_contains": ["vector", "representation", "semantic", "meaning", "words"],
+      "calculation_required": false,
+      "context_keywords": ["embeddings", "vectors", "NLP", "semantic"],
+      "expected_retrieval_sources": ["nlp_guide", "embeddings"],
+      "quality_metrics": {
+        "min_answer_length": 60,
+        "max_answer_length": 350,
+        "expected_precision_at_3": 0.7,
+        "expected_groundedness": 0.8
+      }
+    },
+    {
+      "id": 5,
+      "question": "How does a vector database work?",
+      "category": "technical_system",
+      "difficulty": "medium",
+      "expected_topics": ["vector database", "similarity search", "embeddings", "indexing"],
+      "expected_answer_contains": ["vectors", "similarity", "search", "embeddings", "database"],
+      "calculation_required": false,
+      "context_keywords": ["vector database", "similarity search", "embeddings"],
+      "expected_retrieval_sources": ["vector_db", "database_systems"],
+      "quality_metrics": {
+        "min_answer_length": 70,
+        "max_answer_length": 400,
+        "expected_precision_at_3": 0.7,
+        "expected_groundedness": 0.8
+      }
+    },
+    {
+      "id": 6,
+      "question": "What is 15 * 8 + 32?",
+      "category": "calculation",
+      "difficulty": "easy",
+      "expected_topics": ["arithmetic", "multiplication", "addition"],
+      "expected_answer_contains": ["152", "multiplication", "addition"],
+      "calculation_required": true,
+      "expected_calculation": "15 * 8 + 32",
+      "expected_result": 152.0,
+      "context_keywords": ["arithmetic", "calculation", "mathematics"],
+      "expected_retrieval_sources": ["math_basics"],
+      "quality_metrics": {
+        "min_answer_length": 15,
+        "max_answer_length": 100,
+        "expected_precision_at_3": 0.9,
+        "expected_groundedness": 1.0,
+        "calculation_accuracy_required": true
+      }
+    },
+    {
+      "id": 7,
+      "question": "What is retrieval-augmented generation?",
+      "category": "technical_concept",
+      "difficulty": "hard",
+      "expected_topics": ["RAG", "retrieval", "generation", "LLM", "knowledge"],
+      "expected_answer_contains": ["retrieval", "generation", "knowledge", "LLM", "external"],
+      "calculation_required": false,
+      "context_keywords": ["RAG", "retrieval", "generation", "language model"],
+      "expected_retrieval_sources": ["rag_systems", "llm_guide"],
+      "quality_metrics": {
+        "min_answer_length": 80,
+        "max_answer_length": 450,
+        "expected_precision_at_3": 0.6,
+        "expected_groundedness": 0.8
+      }
+    },
+    {
+      "id": 8,
+      "question": "How do you evaluate machine learning models?",
+      "category": "methodology",
+      "difficulty": "medium",
+      "expected_topics": ["evaluation", "metrics", "validation", "testing", "performance"],
+      "expected_answer_contains": ["metrics", "validation", "testing", "accuracy", "performance"],
+      "calculation_required": false,
+      "context_keywords": ["evaluation", "metrics", "validation", "testing"],
+      "expected_retrieval_sources": ["ml_evaluation", "model_testing"],
+      "quality_metrics": {
+        "min_answer_length": 70,
+        "max_answer_length": 400,
+        "expected_precision_at_3": 0.7,
+        "expected_groundedness": 0.8
+      }
+    },
+    {
+      "id": 9,
+      "question": "Calculate log base 10 of 1000",
+      "category": "calculation",
+      "difficulty": "medium",
+      "expected_topics": ["logarithm", "mathematics", "base 10"],
+      "expected_answer_contains": ["3", "logarithm", "1000", "base 10"],
+      "calculation_required": true,
+      "expected_calculation": "log10(1000)",
+      "expected_result": 3.0,
+      "context_keywords": ["logarithm", "log", "mathematics"],
+      "expected_retrieval_sources": ["math_advanced"],
+      "quality_metrics": {
+        "min_answer_length": 20,
+        "max_answer_length": 150,
+        "expected_precision_at_3": 0.8,
+        "expected_groundedness": 1.0,
+        "calculation_accuracy_required": true
+      }
+    },
+    {
+      "id": 10,
+      "question": "What is the difference between supervised and unsupervised learning?",
+      "category": "comparison",
+      "difficulty": "medium",
+      "expected_topics": ["supervised learning", "unsupervised learning", "labels", "clustering"],
+      "expected_answer_contains": ["supervised", "unsupervised", "labels", "clustering", "classification"],
+      "calculation_required": false,
+      "context_keywords": ["supervised", "unsupervised", "learning", "labels"],
+      "expected_retrieval_sources": ["ml_types", "learning_paradigms"],
+      "quality_metrics": {
+        "min_answer_length": 80,
+        "max_answer_length": 400,
+        "expected_precision_at_3": 0.7,
+        "expected_groundedness": 0.8
+      }
+    },
+    {
+      "id": 11,
+      "question": "How does gradient descent work?",
+      "category": "algorithm",
+      "difficulty": "hard",
+      "expected_topics": ["gradient descent", "optimization", "learning rate", "convergence"],
+      "expected_answer_contains": ["gradient", "optimization", "learning rate", "minimum", "convergence"],
+      "calculation_required": false,
+      "context_keywords": ["gradient descent", "optimization", "learning rate"],
+      "expected_retrieval_sources": ["optimization", "algorithms"],
+      "quality_metrics": {
+        "min_answer_length": 90,
+        "max_answer_length": 450,
+        "expected_precision_at_3": 0.6,
+        "expected_groundedness": 0.7
+      }
+    },
+    {
+      "id": 12,
+      "question": "What is 2^8?",
+      "category": "calculation",
+      "difficulty": "easy",
+      "expected_topics": ["exponentiation", "powers", "mathematics"],
+      "expected_answer_contains": ["256", "power", "exponent"],
+      "calculation_required": true,
+      "expected_calculation": "2**8",
+      "expected_result": 256.0,
+      "context_keywords": ["power", "exponent", "mathematics"],
+      "expected_retrieval_sources": ["math_basics"],
+      "quality_metrics": {
+        "min_answer_length": 15,
+        "max_answer_length": 100,
+        "expected_precision_at_3": 0.9,
+        "expected_groundedness": 1.0,
+        "calculation_accuracy_required": true
+      }
+    },
+    {
+      "id": 13,
+      "question": "What is natural language processing?",
+      "category": "definition",
+      "difficulty": "easy",
+      "expected_topics": ["NLP", "natural language", "processing", "text", "linguistics"],
+      "expected_answer_contains": ["natural language", "processing", "text", "understanding", "computers"],
+      "calculation_required": false,
+      "context_keywords": ["NLP", "natural language", "processing", "text"],
+      "expected_retrieval_sources": ["nlp_intro", "language_processing"],
+      "quality_metrics": {
+        "min_answer_length": 50,
+        "max_answer_length": 300,
+        "expected_precision_at_3": 0.8,
+        "expected_groundedness": 0.9
+      }
+    },
+    {
+      "id": 14,
+      "question": "How do transformers work in AI?",
+      "category": "architecture",
+      "difficulty": "hard",
+      "expected_topics": ["transformers", "attention", "self-attention", "neural networks"],
+      "expected_answer_contains": ["attention", "self-attention", "transformers", "layers", "neural"],
+      "calculation_required": false,
+      "context_keywords": ["transformers", "attention", "self-attention", "neural networks"],
+      "expected_retrieval_sources": ["transformers", "attention_mechanism"],
+      "quality_metrics": {
+        "min_answer_length": 100,
+        "max_answer_length": 500,
+        "expected_precision_at_3": 0.6,
+        "expected_groundedness": 0.7
+      }
+    },
+    {
+      "id": 15,
+      "question": "Calculate the mean of [2, 4, 6, 8, 10]",
+      "category": "calculation",
+      "difficulty": "easy",
+      "expected_topics": ["statistics", "mean", "average"],
+      "expected_answer_contains": ["6", "mean", "average"],
+      "calculation_required": true,
+      "expected_calculation": "mean([2, 4, 6, 8, 10])",
+      "expected_result": 6.0,
+      "context_keywords": ["mean", "average", "statistics"],
+      "expected_retrieval_sources": ["statistics"],
+      "quality_metrics": {
+        "min_answer_length": 20,
+        "max_answer_length": 120,
+        "expected_precision_at_3": 0.8,
+        "expected_groundedness": 1.0,
+        "calculation_accuracy_required": true
+      }
+    },
+    {
+      "id": 16,
+      "question": "What is overfitting in machine learning?",
+      "category": "problem",
+      "difficulty": "medium",
+      "expected_topics": ["overfitting", "generalization", "training", "validation"],
+      "expected_answer_contains": ["overfitting", "generalization", "training", "validation", "performance"],
+      "calculation_required": false,
+      "context_keywords": ["overfitting", "generalization", "training", "validation"],
+      "expected_retrieval_sources": ["ml_problems", "model_training"],
+      "quality_metrics": {
+        "min_answer_length": 60,
+        "max_answer_length": 350,
+        "expected_precision_at_3": 0.7,
+        "expected_groundedness": 0.8
+      }
+    },
+    {
+      "id": 17,
+      "question": "How does cross-validation work?",
+      "category": "methodology",
+      "difficulty": "medium",
+      "expected_topics": ["cross-validation", "k-fold", "validation", "model selection"],
+      "expected_answer_contains": ["cross-validation", "k-fold", "validation", "training", "testing"],
+      "calculation_required": false,
+      "context_keywords": ["cross-validation", "k-fold", "validation"],
+      "expected_retrieval_sources": ["validation_methods", "model_evaluation"],
+      "quality_metrics": {
+        "min_answer_length": 70,
+        "max_answer_length": 400,
+        "expected_precision_at_3": 0.7,
+        "expected_groundedness": 0.8
+      }
+    },
+    {
+      "id": 18,
+      "question": "What is the factorial of 5?",
+      "category": "calculation",
+      "difficulty": "easy",
+      "expected_topics": ["factorial", "mathematics", "combinatorics"],
+      "expected_answer_contains": ["120", "factorial", "5!"],
+      "calculation_required": true,
+      "expected_calculation": "factorial(5)",
+      "expected_result": 120.0,
+      "context_keywords": ["factorial", "mathematics", "combinatorics"],
+      "expected_retrieval_sources": ["math_basics"],
+      "quality_metrics": {
+        "min_answer_length": 15,
+        "max_answer_length": 100,
+        "expected_precision_at_3": 0.9,
+        "expected_groundedness": 1.0,
+        "calculation_accuracy_required": true
+      }
+    },
+    {
+      "id": 19,
+      "question": "What is the difference between AI and machine learning?",
+      "category": "comparison",
+      "difficulty": "medium",
+      "expected_topics": ["AI", "machine learning", "artificial intelligence", "subset"],
+      "expected_answer_contains": ["artificial intelligence", "machine learning", "subset", "broader", "specific"],
+      "calculation_required": false,
+      "context_keywords": ["AI", "machine learning", "artificial intelligence"],
+      "expected_retrieval_sources": ["ai_ml_comparison", "definitions"],
+      "quality_metrics": {
+        "min_answer_length": 70,
+        "max_answer_length": 400,
+        "expected_precision_at_3": 0.7,
+        "expected_groundedness": 0.8
+      }
+    },
+    {
+      "id": 20,
+      "question": "Calculate sin(π/2)",
+      "category": "calculation",
+      "difficulty": "medium",
+      "expected_topics": ["trigonometry", "sine", "pi", "radians"],
+      "expected_answer_contains": ["1", "sine", "pi/2", "90 degrees"],
+      "calculation_required": true,
+      "expected_calculation": "sin(pi/2)",
+      "expected_result": 1.0,
+      "context_keywords": ["sine", "trigonometry", "pi", "radians"],
+      "expected_retrieval_sources": ["trigonometry", "math_advanced"],
+      "quality_metrics": {
+        "min_answer_length": 20,
+        "max_answer_length": 150,
+        "expected_precision_at_3": 0.8,
+        "expected_groundedness": 1.0,
+        "calculation_accuracy_required": true
+      }
+    }
+  ]
+}

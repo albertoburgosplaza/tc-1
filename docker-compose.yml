@@ -1,0 +1,245 @@
+
+version: "3.9"
+
+networks:
+  rag_internal:
+    driver: bridge
+    internal: false  # Allow external access for main app service
+  pyexec_internal:
+    driver: bridge
+    internal: true   # Isolated network for pyexec - no external access
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: unless-stopped
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+          pids: 100
+        reservations:
+          memory: 256M
+          cpus: "0.5"
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - rag_internal
+    security_opt:
+      - no-new-privileges:true
+    read_only: false  # Qdrant needs to write to its storage
+    tmpfs:
+      - /tmp:size=100M,noexec,nosuid,nodev
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 3s bash -c 'cat < /dev/null > /dev/tcp/localhost/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 5
+        window: 120s
+      resources:
+        limits:
+          memory: 3G
+          cpus: "2.0"
+          pids: 200
+        reservations:
+          memory: 2G
+          cpus: "1.0"
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - rag_internal
+    security_opt:
+      - no-new-privileges:true
+    read_only: false  # Ollama needs to write model files
+    tmpfs:
+      - /tmp:size=1G,noexec,nosuid,nodev
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 3s bash -c 'cat < /dev/null > /dev/tcp/localhost/11434'"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  pyexec:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: pyexec
+    container_name: pyexec
+    restart: unless-stopped
+    user: pyexec
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 3s
+        max_attempts: 3
+        window: 60s
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.0"
+          pids: 50  # Strict process limit for security
+        reservations:
+          memory: 512M
+          cpus: "0.5"
+    command: bash -lc "uvicorn pyexec_service:app --host 0.0.0.0 --port 8001"
+    environment:
+      PYEXEC_TIMEOUT_SEC: "5"
+      MAX_EXPR_LENGTH: "500"
+      MAX_EXPR_COMPLEXITY: "100"
+    expose:
+      - "8001"
+    networks:
+      - rag_internal
+      - pyexec_internal
+    security_opt:
+      - no-new-privileges:true
+      - seccomp:unconfined  # Needed for Python execution, but restricted user
+    read_only: true  # Read-only filesystem for maximum security
+    tmpfs:
+      - /tmp:size=100M,noexec,nosuid,nodev
+      - /app/.cache:size=50M,noexec,nosuid,nodev
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: app
+    container_name: rag_app
+    restart: unless-stopped
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+        window: 180s
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+          pids: 100
+        reservations:
+          memory: 1G
+          cpus: "1.0"
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+      pyexec:
+        condition: service_healthy
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      LLM_MODEL: llama3.2:1b
+      LLM_PROVIDER: ollama
+      GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"
+      QDRANT_URL: http://qdrant:6333
+      COLLECTION_NAME: corpus_pdf
+      GRADIO_SERVER_NAME: 0.0.0.0
+      GRADIO_SERVER_PORT: "7860"
+      PYEXEC_URL: http://pyexec:8001
+      # Configuración de validación
+      MAX_HISTORY_CHARS: "8000"
+      MAX_QUERY_LENGTH: "2000"
+      MIN_QUERY_LENGTH: "1"
+      # Configuración de optimización y paralelización
+      EMBEDDING_CACHE_SIZE: "200"
+      PARALLEL_RETRIEVAL: "true"
+      MAX_RETRIEVAL_WORKERS: "2"
+    ports:
+      - "7860:7860"
+      - "8080:8080"
+    volumes:
+      - ./docs:/app/docs:ro
+    networks:
+      - rag_internal
+    security_opt:
+      - no-new-privileges:true
+    read_only: false  # Needs to write cache files
+    tmpfs:
+      - /tmp:size=500M,noexec,nosuid,nodev
+    command: bash -lc "python app.py"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  ingest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: ingest
+    container_name: ingest
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2.0"
+          pids: 100
+        reservations:
+          memory: 1G
+          cpus: "1.0"
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      COLLECTION_NAME: corpus_pdf
+      EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+      DOCUMENTS_DIR: /app/docs
+      # Configuración de procesamiento
+      MAX_PDF_SIZE_MB: "100"
+      CHUNK_SIZE: "1200"
+      CHUNK_OVERLAP: "180"
+      MIN_CONTENT_LENGTH: "10"
+      # Configuración de paralelización
+      MAX_WORKERS: "4"
+      BATCH_SIZE: "50"
+    volumes:
+      - ./docs:/app/docs:ro
+    networks:
+      - rag_internal
+    security_opt:
+      - no-new-privileges:true
+    read_only: false  # Needs to write cache files during ingestion
+    tmpfs:
+      - /tmp:size=1G,noexec,nosuid,nodev
+    entrypoint: ["python", "ingest.py"]
+
+volumes:
+  qdrant_data:
+  ollama_data:

@@ -1,0 +1,8 @@
+
+langchain>=0.2
+langchain-community
+langchain-text-splitters
+sentence-transformers
+qdrant-client
+pypdf
+pymupdf

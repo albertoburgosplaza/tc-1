@@ -1,0 +1,32 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    wget \
+    docker.io \
+    docker-compose \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.app.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.app.txt
+
+# Copy source code
+COPY . .
+
+# Install additional test dependencies
+RUN pip install --no-cache-dir \
+    docker \
+    testcontainers
+
+# Set environment for testing
+ENV PYTHONPATH=/app
+ENV PYTEST_CURRENT_TEST=/app/tests
+
+# Default command
+CMD ["python", "-m", "pytest", "tests/", "-v"]

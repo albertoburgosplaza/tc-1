@@ -1,0 +1,18 @@
+
+langchain>=0.2
+langchain-community
+langchain-text-splitters
+langchain-google-genai
+sentence-transformers
+qdrant-client
+gradio
+pypdf
+pymupdf
+requests
+
+# Testing dependencies
+pytest>=7.0
+pytest-asyncio
+pytest-mock
+pytest-cov
+httpx  # For async HTTP testing

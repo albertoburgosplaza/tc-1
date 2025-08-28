@@ -1,0 +1,160 @@
+version: "3.9"
+
+services:
+  qdrant-test:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-test
+    restart: unless-stopped
+    ports:
+      - "6334:6333"
+    volumes:
+      - qdrant_test_data:/qdrant/storage
+    environment:
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__SERVICE__GRPC_PORT=6334
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:6333/healthz || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 10s
+
+  ollama-test:
+    image: ollama/ollama:latest
+    container_name: ollama-test
+    restart: unless-stopped
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama_test_data:/root/.ollama
+    environment:
+      - OLLAMA_MODELS=/root/.ollama/models
+      - OLLAMA_HOST=0.0.0.0
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  pyexec-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: pyexec
+    container_name: pyexec-test
+    restart: unless-stopped
+    command: bash -lc "uvicorn pyexec_service:app --host 0.0.0.0 --port 8001"
+    environment:
+      PYEXEC_TIMEOUT_SEC: "5"
+      MAX_EXPR_LENGTH: "500"
+      MAX_EXPR_COMPLEXITY: "50"  # Reduced for testing
+    expose:
+      - "8001"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/health"]
+      interval: 3s
+      timeout: 2s
+      retries: 15
+      start_period: 10s
+
+  app-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: app
+    container_name: rag_app_test
+    restart: unless-stopped
+    depends_on:
+      qdrant-test:
+        condition: service_healthy
+      ollama-test:
+        condition: service_healthy
+      pyexec-test:
+        condition: service_healthy
+    environment:
+      OLLAMA_BASE_URL: http://ollama-test:11434
+      LLM_MODEL: mistral:7b-instruct
+      QDRANT_URL: http://qdrant-test:6333
+      COLLECTION_NAME: test_corpus_pdf
+      GRADIO_SERVER_NAME: 0.0.0.0
+      GRADIO_SERVER_PORT: "7860"
+      PYEXEC_URL: http://pyexec-test:8001
+      # Optimized settings for testing
+      MAX_HISTORY_CHARS: "4000"
+      MAX_QUERY_LENGTH: "1000"
+      MIN_QUERY_LENGTH: "1"
+      SLIDING_WINDOW_TURNS: "4"
+    ports:
+      - "7861:7860"
+    volumes:
+      - ./tests/fixtures:/app/docs:ro
+    command: bash -lc "python app.py"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7860"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  ingest-test:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: ingest
+    container_name: ingest-test
+    depends_on:
+      qdrant-test:
+        condition: service_healthy
+    environment:
+      QDRANT_URL: http://qdrant-test:6333
+      COLLECTION_NAME: test_corpus_pdf
+      EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+      DOCUMENTS_DIR: /app/docs
+      # Optimized settings for testing
+      MAX_PDF_SIZE_MB: "50"
+      CHUNK_SIZE: "800"
+      CHUNK_OVERLAP: "100"
+      MIN_CONTENT_LENGTH: "5"
+    volumes:
+      - ./tests/fixtures:/app/docs:ro
+    entrypoint: ["python", "ingest.py"]
+    profiles:
+      - ingest  # Only run when explicitly requested
+
+  # Test runner service
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: test-runner
+    depends_on:
+      app-test:
+        condition: service_healthy
+    environment:
+      - PYTHONPATH=/app
+      - PYTEST_CURRENT_TEST=/app/tests
+    volumes:
+      - .:/app
+    working_dir: /app
+    command: >
+      sh -c "
+        echo 'Waiting for services to stabilize...' &&
+        sleep 10 &&
+        python -m pytest tests/e2e/ -v --tb=short -x
+      "
+    profiles:
+      - test
+
+volumes:
+  qdrant_test_data:
+    driver: local
+  ollama_test_data:
+    driver: local
+
+networks:
+  default:
+    name: rag_test_network
