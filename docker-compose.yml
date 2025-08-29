@@ -135,6 +135,11 @@ services:
       GRADIO_SERVER_NAME: 0.0.0.0
       GRADIO_SERVER_PORT: "7860"
       PYEXEC_URL: http://pyexec:8001
+      # Configuración del reranker multimodal
+      JINA_RERANKER_ENABLED: "true"
+      RETRIEVAL_TOP_K: "30"
+      RERANK_TOP_K: "15"
+      JINA_RERANKER_TIMEOUT: "20"
       # Configuración de validación
       MAX_HISTORY_CHARS: "8000"
       MAX_QUERY_LENGTH: "2000"

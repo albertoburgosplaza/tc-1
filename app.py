@@ -17,6 +17,7 @@ from langchain_community.vectorstores import Qdrant
 from langchain_google_genai import ChatGoogleGenerativeAI
 from qdrant_client import QdrantClient
 from embedding_factory import EmbeddingFactory
+from jina_reranker import create_jina_reranker
 
 # Configurar logging estructurado
 logging.basicConfig(
@@ -99,6 +100,12 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 COLLECTION = os.getenv("COLLECTION_NAME", "corpus_pdf")
 PYEXEC_URL = os.getenv("PYEXEC_URL", "http://localhost:8001")
+
+# Configuración del reranker
+JINA_RERANKER_ENABLED = os.getenv("JINA_RERANKER_ENABLED", "true").lower() == "true"
+RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "30"))
+RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "15"))
+JINA_RERANKER_TIMEOUT = int(os.getenv("JINA_RERANKER_TIMEOUT", "20"))
 
 
 # Configuración optimizada de conexiones HTTP
@@ -287,10 +294,29 @@ class CustomQdrantRetriever:
         
         return documents
 
-base_retriever = CustomQdrantRetriever(client, COLLECTION, emb, k=15)
+base_retriever = CustomQdrantRetriever(client, COLLECTION, emb, k=RETRIEVAL_TOP_K)
 
 # Crear retriever paralelo que envuelve el retriever base
 retriever = ParallelRetriever(base_retriever, max_workers=MAX_RETRIEVAL_WORKERS)
+
+# Inicializar reranker si está habilitado
+reranker = None
+if JINA_RERANKER_ENABLED:
+    try:
+        reranker = create_jina_reranker(
+            enabled=True,
+            timeout=JINA_RERANKER_TIMEOUT
+        )
+        if reranker:
+            logger.info(f"Jina Reranker enabled: retrieval_k={RETRIEVAL_TOP_K}, rerank_k={RERANK_TOP_K}")
+        else:
+            logger.warning("Jina Reranker is disabled via environment variable")
+    except Exception as e:
+        logger.error(f"Failed to initialize Jina Reranker: {str(e)}")
+        logger.warning("Continuing without reranker")
+        reranker = None
+else:
+    logger.info("Jina Reranker disabled via configuration")
 
 # Memoria simple
 MAX_HISTORY_CHARS = int(os.getenv("MAX_HISTORY_CHARS", "8000"))
@@ -340,7 +366,6 @@ def get_app_status() -> Dict:
     # Verificar servicios críticos
     services = {
         "qdrant": check_service_health(QDRANT_URL, "/healthz"),
-        "ollama": check_service_health(OLLAMA_URL, "/api/tags"),
         "pyexec": check_service_health(PYEXEC_URL, "/health")
     }
     
@@ -349,6 +374,17 @@ def get_app_status() -> Dict:
     
     # Obtener estadísticas de caché de embeddings (deshabilitado temporalmente)
     cache_stats = {"hits": 0, "misses": 0, "hit_rate": 0.0, "current_size": 0, "max_size": 200}
+    
+    # Obtener métricas del reranker si está disponible
+    reranker_metrics = {}
+    if reranker:
+        try:
+            reranker_metrics = reranker.get_metrics()
+        except Exception as e:
+            logger.warning(f"Failed to get reranker metrics: {e}")
+            reranker_metrics = {"error": "Failed to get metrics"}
+    else:
+        reranker_metrics = {"status": "disabled"}
     
     # Estado general
     all_healthy = all(service["status"] == "healthy" for service in services.values())
@@ -372,6 +408,7 @@ def get_app_status() -> Dict:
             "max_size": cache_stats["max_size"],
             "utilization_percent": round((cache_stats["current_size"] / cache_stats["max_size"]) * 100, 2) if cache_stats["max_size"] > 0 else 0.0
         },
+        "reranker": reranker_metrics,
         "services": services,
         "timestamp": time.time()
     }
@@ -706,11 +743,38 @@ def answer_with_rag(query: str, history: List[Tuple[str, str]]):
         
         docs = retriever.get_relevant_documents(query)
         
+        # Aplicar reranking si está habilitado
+        rerank_latency_ms = 0.0
+        if reranker and len(docs) > 1:
+            try:
+                logger.info(f"Applying reranking: {len(docs)} → {RERANK_TOP_K} docs")
+                reranked_docs, rerank_latency_ms = reranker.rerank_doc_objects(
+                    query=query,
+                    documents=docs,
+                    top_n=RERANK_TOP_K
+                )
+                docs = reranked_docs
+                logger.info(f"Reranking completed: {len(docs)} docs selected, latency: {rerank_latency_ms:.2f}ms")
+                
+                # Log reranking scores for debugging
+                for i, doc in enumerate(docs[:3], 1):
+                    score = doc.metadata.get('rerank_score', 'N/A')
+                    title = doc.metadata.get('title', 'Unknown')[:50]
+                    logger.debug(f"Reranked doc {i}: {title} (score: {score})")
+                    
+            except Exception as e:
+                logger.error(f"Reranking failed, using original order: {str(e)}")
+                docs = docs[:RERANK_TOP_K]  # Fallback: truncar sin rerank
+        elif len(docs) > RERANK_TOP_K:
+            # Si reranker está deshabilitado, truncar a RERANK_TOP_K
+            docs = docs[:RERANK_TOP_K]
+        
         # Obtener estadísticas después y detectar si fue cache hit (deshabilitado temporalmente)
         cache_stats_after = {"hits": 0, "misses": 0, "hit_rate": 0.0}
         was_cache_hit = False
         
-        logger.info(f"Retrieved {len(docs)} documents for RAG query - Cache {'hit' if was_cache_hit else 'miss'} (hit rate: {cache_stats_after['hit_rate'] * 100:.1f}%)")
+        rerank_info = f", rerank_latency: {rerank_latency_ms:.2f}ms" if rerank_latency_ms > 0 else ""
+        logger.info(f"Retrieved {len(docs)} documents for RAG query - Cache {'hit' if was_cache_hit else 'miss'} (hit rate: {cache_stats_after['hit_rate'] * 100:.1f}%){rerank_info}")
         
         # Construir contexto optimizado
         context_parts = []
