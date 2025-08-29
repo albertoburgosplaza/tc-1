@@ -653,6 +653,98 @@ def extract_numbers_and_lists(text: str):
     nums = [num.replace(',', '.') for num in nums_raw if num.strip()]
     return nums
 
+def extract_cited_documents(response: str) -> list[int]:
+    """Extrae los números de documentos que el LLM citó en su respuesta"""
+    import re
+    # Buscar patrones como "DOCUMENTO 1", "DOCUMENTO 7", etc.
+    pattern = r'DOCUMENTO\s+(\d+)'
+    matches = re.findall(pattern, response, re.IGNORECASE)
+    # Convertir a enteros y eliminar duplicados manteniendo orden
+    cited_docs = []
+    for match in matches:
+        doc_num = int(match)
+        if doc_num not in cited_docs:
+            cited_docs.append(doc_num)
+    return cited_docs
+
+def create_citation_mapping(cited_doc_numbers: list[int]) -> dict[int, int]:
+    """Crea un mapeo de números de documento originales a números secuenciales"""
+    return {original: sequential for sequential, original in enumerate(cited_doc_numbers, 1)}
+
+def rewrite_document_references(response: str, citation_mapping: dict[int, int]) -> str:
+    """Reescribe las referencias de documentos con formato de cita inline [N]"""
+    import re
+    
+    def replace_doc_ref(match):
+        doc_num = int(match.group(1))
+        if doc_num in citation_mapping:
+            return f"[{citation_mapping[doc_num]}]"
+        else:
+            # Si por alguna razón se referenció un documento no mapeado, mantener original
+            return match.group(0)
+    
+    # Reemplazar "DOCUMENTO X" con "[N]"
+    updated_response = re.sub(r'DOCUMENTO\s+(\d+)', replace_doc_ref, response, flags=re.IGNORECASE)
+    return updated_response
+
+def generate_citations_for_cited_docs(docs: list, cited_doc_numbers: list[int], citation_mapping: dict[int, int]) -> str:
+    """Genera la lista de citas solo para los documentos efectivamente citados"""
+    if not cited_doc_numbers:
+        return ""
+    
+    citations = []
+    
+    for original_doc_num in cited_doc_numbers:
+        # Los documentos están indexados desde 0, pero numerados desde 1 en el contexto
+        doc_index = original_doc_num - 1
+        
+        if doc_index < len(docs):
+            doc = docs[doc_index]
+            title = doc.metadata.get('title', 'Documento desconocido')
+            page = doc.metadata.get('page', 'N/A')
+            
+            # Extraer nombre del documento de manera más amigable
+            display_title = title.replace('_', ' ').title()
+            if len(display_title) > 50:
+                display_title = display_title[:47] + "..."
+            
+            # Obtener el número secuencial de la cita
+            sequential_num = citation_mapping[original_doc_num]
+            
+            # Formato de cita
+            citation = f"[{sequential_num}] {display_title} (pág. {page})"
+            citations.append(citation)
+    
+    # Formato final de citas
+    if len(citations) == 1:
+        return f"\n\n📖 Fuente consultada:\n{citations[0]}"
+    else:
+        return f"\n\n📚 Fuentes consultadas:\n" + "\n".join(citations)
+
+def process_inline_citations(response: str, docs: list) -> tuple[str, str]:
+    """Procesa la respuesta del LLM para generar citas inline y lista de referencias"""
+    # Extraer documentos citados
+    cited_doc_numbers = extract_cited_documents(response)
+    
+    if not cited_doc_numbers:
+        logger.info("No document citations found in LLM response")
+        return response, ""
+    
+    logger.info(f"Found citations for documents: {cited_doc_numbers}")
+    
+    # Crear mapeo secuencial
+    citation_mapping = create_citation_mapping(cited_doc_numbers)
+    
+    # Reescribir referencias con formato inline
+    processed_response = rewrite_document_references(response, citation_mapping)
+    
+    # Generar lista de citas
+    citations_text = generate_citations_for_cited_docs(docs, cited_doc_numbers, citation_mapping)
+    
+    logger.info(f"Citation mapping: {citation_mapping}")
+    
+    return processed_response + citations_text, citations_text
+
 def maybe_python(user_text: str):
     if user_text.lower().startswith("python:"):
         expr = user_text.split(":", 1)[1].strip()
@@ -794,17 +886,17 @@ CONTENIDO:
         context = "\n\n".join(context_parts)
         
         # Sistema prompt optimizado
-        sys = """Eres un asistente experto que responde preguntas basándose ÚNICAMENTE en el contexto proporcionado. 
+        sys = """Eres un asistente experto que responde preguntas basándose en el contexto proporcionado.
 
 INSTRUCCIONES IMPORTANTES:
 1. Lee TODO el contexto cuidadosamente antes de responder
-2. Busca información relevante en TODOS los documentos proporcionados
-3. Si encuentras nombres de empresas, listados, porcentajes o cualquier dato específico, DEBES mencionarlos
-4. Solo responde "No hay información suficiente" si después de leer TODO el contexto no encuentras NADA relacionado
-5. SIEMPRE cita las fuentes específicas donde encontraste la información
-6. Si la pregunta es sobre empresas del S&P 500 y ves una lista de "POSICIONES" o empresas con porcentajes, DEBES listarlas
+2. Busca información relevante en TODOS los documentos proporcionados  
+3. Usa conceptos relacionados y sinónimos - por ejemplo, "interpretabilidad", "transparencia", "explicación" están relacionados con "explicabilidad"
+4. Si encuentras información parcial o conceptos relacionados, úsalos para construir una respuesta útil
+5. SIEMPRE cita las fuentes específicas donde encontraste la información usando el formato DOCUMENTO X
+6. Solo responde "No hay información suficiente" si realmente NO HAY nada relacionado con la pregunta
 
-RECUERDA: Tu trabajo es extraer y presentar TODA la información relevante del contexto."""
+IMPORTANTE: Tu objetivo es ser útil y proporcionar información valiosa basada en el contexto disponible."""
 
         hist_text = fmt_hist(history[-SLIDING_WINDOW_TURNS:], enhanced=True)
         prompt = f"""{sys}
@@ -842,34 +934,10 @@ Respuesta:"""
         logger.debug(f"LLM response: {resp[:200]}")
         logger.info(f"RAG response generated - latency: {latency:.3f}s, response_length: {len(resp)}")
         
-        # Generar citas mejoradas con ranking de relevancia (top 1-3 fuentes)
-        top_sources = docs[:3]  # Limitamos a top 3 fuentes más relevantes
-        citations = []
+        # Procesar citas inline y generar referencias correspondientes
+        processed_response, final_citations = process_inline_citations(resp, docs)
         
-        for i, doc in enumerate(top_sources, 1):
-            title = doc.metadata.get('title', 'Documento desconocido')
-            page = doc.metadata.get('page', 'N/A')
-            source = doc.metadata.get('source', title)
-            
-            # Extraer nombre del documento de manera más amigable
-            display_title = title.replace('_', ' ').title()
-            if len(display_title) > 50:
-                display_title = display_title[:47] + "..."
-            
-            # Formato mejorado de cita con ranking
-            citation = f"[{i}] {display_title} (pág. {page})"
-            citations.append(citation)
-        
-        # Formato final de citas
-        if citations:
-            if len(citations) == 1:
-                cite_text = f"\n\n📖 Fuente: {citations[0]}"
-            else:
-                cite_text = f"\n\n📚 Fuentes consultadas:\n" + "\n".join(f"   {cite}" for cite in citations)
-        else:
-            cite_text = ""
-        
-        return resp + cite_text, latency
+        return processed_response, latency
     except Exception as e:
         error_count += 1
         logger.error(f"RAG operation failed - error: {str(e)}")

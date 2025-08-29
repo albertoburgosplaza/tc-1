@@ -128,7 +128,8 @@ def process_single_pdf(pdf_path: str) -> tuple[list, int, int, int]:
         
         # Procesar cada página con validación
         for page_index, d in enumerate(pdf_documents):
-            # Calcular número de página correcto (1-based)
+            # Usar el índice físico real de la página (1-indexed)
+            # No usar page_label ya que puede ser el número impreso en el PDF
             page_num = page_index + 1
             
             # Asignar metadatos mejorados
