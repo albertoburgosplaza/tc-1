@@ -21,8 +21,8 @@ def test_env() -> Dict[str, str]:
     return {
         "QDRANT_URL": "http://localhost:6333",
         "COLLECTION_NAME": "test_collection",
-        "OLLAMA_BASE_URL": "http://localhost:11434",
-        "LLM_MODEL": "mistral:7b-instruct",
+        "GOOGLE_API_KEY": "test_google_api_key",
+        "JINA_API_KEY": "test_jina_api_key",
         "PYEXEC_URL": "http://localhost:8001",
         "MAX_QUERY_LENGTH": "2000",
         "MIN_QUERY_LENGTH": "1",
@@ -45,10 +45,10 @@ def mock_qdrant_client():
     return mock_client
 
 @pytest.fixture
-def mock_ollama_client():
-    """Mock Ollama client for testing"""
+def mock_google_llm():
+    """Mock Google Gemini LLM for testing"""
     mock_client = MagicMock()
-    mock_client.invoke.return_value = "Test response"
+    mock_client.invoke.return_value = "Test response from Google Gemini"
     return mock_client
 
 @pytest.fixture

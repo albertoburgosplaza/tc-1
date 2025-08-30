@@ -50,7 +50,7 @@ docker compose up -d
 3. **Selecciona "google"** del radio button "Proveedor LLM"
 4. **Verifica el cambio** en el campo "Estado del modelo"
    - ✅ Éxito: "Modelo actual: gemini-2.5-flash-lite (google)"
-   - ❌ Error: "Error al cambiar a google. Usando: llama3.2:1b (ollama)"
+   - ❌ Error: "Error de configuración de Google API Key"
 
 ## ⚡ Ventajas de Gemini 2.5 Flash Lite
 
@@ -71,16 +71,16 @@ docker compose up -d
 
 ## 🔄 Cambio Dinámico Entre Modelos
 
-### Desde la Interfaz Web
-- **Cambiar a Gemini**: Selecciona "google" → Cambio automático
-- **Volver a Ollama**: Selecciona "ollama" → Vuelve a llama3.2:1b
+### Configuración Actual
+- **Único LLM**: Google Gemini 2.5 Flash Lite
+- **Sin alternativas**: Ollama ya no está soportado
 
 ### Configuración por Defecto
 ```yaml
 # En docker-compose.yml
 environment:
-  LLM_PROVIDER: ollama          # Cambiar a "google" para Gemini por defecto
-  LLM_MODEL: llama3.2:1b       # Solo aplica cuando provider=ollama
+  LLM_PROVIDER: google         # Google Gemini es el único proveedor soportado
+  GOOGLE_API_KEY: "${GOOGLE_API_KEY}"  # Requerido para Gemini
   GOOGLE_API_KEY: "${GOOGLE_API_KEY:-}"  # Toma del .env
 ```
 
@@ -187,7 +187,7 @@ curl -s http://localhost:8080/status | jq '.services'
 docker compose logs app | tail -20 | grep -i "model\|provider"
 
 # Test básico con ambos modelos
-# 1. Selecciona ollama → Haz una pregunta
+# 1. Usa Google Gemini (configurado por defecto) → Haz una pregunta
 # 2. Selecciona google → Haz la misma pregunta
 # 3. Compara velocidad y calidad
 ```

@@ -90,13 +90,13 @@ docker-compose ps
 
 # Check service logs
 docker-compose logs qdrant | tail -20
-docker-compose logs ollama | tail -20
+# Google Gemini uses API, check app logs for API status
 docker-compose logs pyexec | tail -20
 docker-compose logs rag_app | tail -20
 ```
 
 - [ ] **Qdrant** status: healthy, port 6333 accessible
-- [ ] **Ollama** status: healthy, port 11434 accessible  
+- [ ] **Google Gemini API** configured with valid API key  
 - [ ] **PyExec** status: healthy, running as non-root user
 - [ ] **RAG App** status: healthy, ports 7860 & 8080 accessible
 - [ ] **No critical errors** in service logs
@@ -116,7 +116,7 @@ INGEST_END_TIME=$(date +%s)
 echo "Ingestion time: $((INGEST_END_TIME - INGEST_START_TIME)) seconds"
 
 # Verify documents were ingested
-docker-compose exec qdrant curl http://localhost:6333/collections/corpus_pdf
+docker-compose exec qdrant curl http://localhost:6333/collections/rag_multimodal
 ```
 
 - [ ] **Ingestion completed** without errors

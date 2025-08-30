@@ -25,7 +25,7 @@ The RAG Chatbot uses a microservices architecture with the following components:
 ├─────────────────────────────────────────────────────────────┤
 │  [User] → [Gradio UI] → [App Service] → [LLM/RAG/PyExec]    │
 │             │              │                               │
-│             │              ├─ [Ollama LLM]                 │
+│             │              ├─ [Google Gemini API]          │
 │             │              ├─ [Qdrant Vector DB]           │
 │             │              └─ [PyExec Service]             │
 │             │                                              │
@@ -56,14 +56,14 @@ The RAG Chatbot uses a microservices architecture with the following components:
      - Perform similarity search
      - Provide web dashboard
 
-3. **Ollama LLM Service**
+3. **Google Gemini API Service**
    - **Role**: Large Language Model inference
-   - **Technology**: Ollama (local LLM runner)
-   - **Port**: 11434
+   - **Technology**: Google Gemini 2.5 Flash Lite API
+   - **Access**: Cloud-based API
    - **Responsibilities**:
-     - Run local LLM models
-     - Generate text responses
-     - Support multiple model formats
+     - Generate text responses via API
+     - Process RAG context and queries
+     - Provide fast, efficient inference
 
 4. **PyExec Service** (`pyexec_service.py`)
    - **Role**: Secure Python code execution
@@ -90,9 +90,9 @@ The RAG Chatbot uses a microservices architecture with the following components:
 #### RAG Query Flow
 1. User submits query via Gradio interface
 2. App validates input and checks conversation history
-3. Query is embedded using HuggingFace transformer
+3. Query is embedded using Jina embeddings API
 4. Vector search retrieves relevant document chunks from Qdrant
-5. Context + query sent to Ollama LLM
+5. Context + query sent to Google Gemini API
 6. Response generated and returned to user
 
 #### Python Execution Flow
@@ -104,9 +104,9 @@ The RAG Chatbot uses a microservices architecture with the following components:
 
 ### Communication Patterns
 
-- **Synchronous HTTP**: App ↔ PyExec, App ↔ Qdrant, App ↔ Ollama
+- **Synchronous HTTP**: App ↔ PyExec, App ↔ Qdrant, App ↔ Google Gemini API
 - **Database Access**: App → Qdrant (read), Ingest → Qdrant (write)
-- **Model Access**: App → Ollama (inference)
+- **Model Access**: App → Google Gemini API (inference)
 - **Health Checks**: All services expose health endpoints
 
 ## Development Setup
@@ -163,12 +163,17 @@ Create a `.env.local` file for development:
 
 ```bash
 # LLM Configuration
-OLLAMA_BASE_URL=http://localhost:11434
-LLM_MODEL=mistral:7b-instruct
+LLM_PROVIDER=google
+GOOGLE_API_KEY=your_google_api_key_here
+
+# Embeddings Configuration
+EMBEDDING_PROVIDER=jina
+JINA_API_KEY=your_jina_api_key_here
+EMBEDDING_MODEL=jina-embeddings-v4
 
 # Vector Database
 QDRANT_URL=http://localhost:6333
-COLLECTION_NAME=corpus_pdf_dev
+COLLECTION_NAME=rag_multimodal
 
 # Services
 PYEXEC_URL=http://localhost:8001
@@ -316,13 +321,14 @@ docker compose -f docker-compose.dev.yml up
 
 1. **Run external services:**
    ```bash
-   docker compose up -d qdrant ollama
+   docker compose up -d qdrant
    ```
 
 2. **Run app locally:**
    ```bash
    export QDRANT_URL=http://localhost:6333
-   export OLLAMA_BASE_URL=http://localhost:11434
+   export GOOGLE_API_KEY=your_google_api_key
+   export JINA_API_KEY=your_jina_api_key
    python app.py
    ```
 
@@ -449,12 +455,12 @@ refactor: extract conversation memory class
 3. **Add service dependencies in app service**
 4. **Update documentation and setup script**
 
-### New LLM Model Support
+### New LLM Provider Support
 
-1. **Add model to Ollama supported models**
-2. **Update docker-compose.yml environment variables**
-3. **Test model compatibility with existing prompts**
-4. **Update setup.sh model options**
+1. **Add provider configuration to app.py**
+2. **Update environment variables for new provider**
+3. **Test provider compatibility with existing prompts**
+4. **Update documentation and setup script**
 
 ### New Document Format Support
 
@@ -529,16 +535,19 @@ docker compose down -v
 docker compose up --build
 ```
 
-#### Model Download Failures
+#### API Connection Issues
 ```bash
-# Check Ollama connectivity
-docker exec ollama curl -I https://ollama.ai
+# Check Google API key and quota
+curl -H "Authorization: Bearer $GOOGLE_API_KEY" \
+  "https://generativelanguage.googleapis.com/v1/models"
 
-# Try alternative model
-docker exec ollama ollama pull mistral:7b-instruct-q4_0
+# Check Jina API key
+curl -H "Authorization: Bearer $JINA_API_KEY" \
+  "https://api.jina.ai/v1/embeddings" \
+  -d '{"input": ["test"], "model": "jina-embeddings-v4"}'
 
-# Check disk space
-docker exec ollama df -h
+# Verify API quotas and billing
+echo "Check Google Cloud Console and Jina dashboard for usage"
 ```
 
 #### Vector Database Issues

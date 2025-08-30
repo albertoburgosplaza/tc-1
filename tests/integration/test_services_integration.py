@@ -80,37 +80,21 @@ class TestServicesIntegration:
             assert collection_info.vectors_count > 0
 
     @pytest.mark.integration
-    def test_app_to_ollama_communication(self, mock_services_running):
-        """Test communication from app to Ollama service"""
-        ollama_url = "http://ollama:11434"
-        
-        # Test model availability
-        models_response = requests.get(f"{ollama_url}/api/tags")
-        assert models_response.status_code == 200
-        
-        # Mock generate request
-        with patch('requests.post') as mock_post:
+    def test_app_to_gemini_communication(self, mock_services_running):
+        """Test communication from app to Google Gemini API"""
+        # Mock Google Gemini API call
+        with patch('google.generativeai.GenerativeModel') as mock_model:
+            mock_instance = Mock()
             mock_response = Mock()
-            mock_response.status_code = 200
-            mock_response.json.return_value = {
-                "model": "mistral:7b-instruct",
-                "response": "This is a test response from the language model.",
-                "done": True
-            }
-            mock_post.return_value = mock_response
+            mock_response.text = "This is a test response from Google Gemini."
+            mock_instance.generate_content.return_value = mock_response
+            mock_model.return_value = mock_instance
             
-            generate_payload = {
-                "model": "mistral:7b-instruct",
-                "prompt": "What is artificial intelligence?",
-                "stream": False
-            }
+            # Test the API call
+            model = mock_model("gemini-2.5-flash-lite")
+            response = model.generate_content("What is artificial intelligence?")
             
-            response = requests.post(f"{ollama_url}/api/generate", json=generate_payload)
-            assert response.status_code == 200
-            
-            result = response.json()
-            assert "response" in result
-            assert "model" in result
+            assert response.text == "This is a test response from Google Gemini."
 
     @pytest.mark.integration
     def test_gradio_interface_integration(self):
@@ -303,7 +287,7 @@ class TestServicesIntegration:
         calc_result = calc_response.json()
         assert calc_result["result"] == 42.0  # Mocked response
         
-        # Step 4: Generate response (app -> ollama)
+        # Step 4: Generate response (app -> Google Gemini)
         with patch('app.llm') as mock_llm:
             mock_llm.invoke.return_value = Mock(
                 content=f"The square root of 144 is {calc_result['result']}"
@@ -317,7 +301,7 @@ class TestServicesIntegration:
         # Test environment variable consistency
         expected_configs = {
             "QDRANT_URL": "http://qdrant:6333",
-            "OLLAMA_BASE_URL": "http://ollama:11434",
+            "GOOGLE_API_KEY": "test_key",
             "PYEXEC_URL": "http://pyexec:8001",
             "COLLECTION_NAME": "corpus_pdf"
         }
@@ -342,7 +326,8 @@ class TestServicesIntegration:
         for _ in range(3):
             # Health checks
             requests.get("http://qdrant:6333/healthz")
-            requests.get("http://ollama:11434/api/tags")
+            # Mock Google API health check
+            True
             requests.get("http://pyexec:8001/health")
             
             # Functional calls

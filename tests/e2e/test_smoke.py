@@ -83,21 +83,6 @@ services:
       timeout: 3s
       retries: 10
 
-  ollama-test:
-    image: ollama/ollama:latest
-    container_name: ollama-test
-    restart: unless-stopped
-    ports:
-      - "11435:11434"
-    volumes:
-      - ollama_test_data:/root/.ollama
-    environment:
-      - OLLAMA_MODELS=/root/.ollama/models
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:11434/api/tags || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
 
   pyexec-test:
     build:
@@ -131,13 +116,11 @@ services:
     depends_on:
       qdrant-test:
         condition: service_healthy
-      ollama-test:
-        condition: service_healthy
       pyexec-test:
         condition: service_healthy
     environment:
-      OLLAMA_BASE_URL: http://ollama-test:11434
-      LLM_MODEL: mistral:7b-instruct
+      GOOGLE_API_KEY: "test_google_key"
+      JINA_API_KEY: "test_jina_key"
       QDRANT_URL: http://qdrant-test:6333
       COLLECTION_NAME: test_corpus_pdf
       GRADIO_SERVER_NAME: 0.0.0.0
@@ -177,7 +160,6 @@ services:
 
 volumes:
   qdrant_test_data:
-  ollama_test_data:
 """
         
         test_compose_path = Path("docker-compose.test.yml")
@@ -248,7 +230,6 @@ volumes:
             # Wait for services to be healthy
             services_to_check = [
                 "qdrant-test",
-                "ollama-test", 
                 "pyexec-test"
             ]
             
@@ -280,7 +261,6 @@ volumes:
             # Wait and test health endpoints
             health_endpoints = [
                 ("http://localhost:6334/healthz", "Qdrant"),
-                ("http://localhost:11435/api/tags", "Ollama"),
             ]
             
             for url, service_name in health_endpoints:
@@ -362,7 +342,7 @@ volumes:
             ], timeout=300)
             
             # Wait for all services
-            services = ["qdrant-test", "ollama-test", "pyexec-test"]
+            services = ["qdrant-test", "pyexec-test"]
             for service in services:
                 assert self.wait_for_container_healthy(service, timeout=120)
             
@@ -457,7 +437,7 @@ volumes:
         # Parse and validate the configuration
         config_output = result.stdout
         assert "qdrant-test" in config_output
-        assert "ollama-test" in config_output  
+        # Ollama is no longer used - removed  
         assert "pyexec-test" in config_output
         assert "app-test" in config_output
         assert "ingest-test" in config_output

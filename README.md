@@ -1,7 +1,7 @@
 
 # Chatbot RAG con Google Gemini — Microservicios con Docker Compose
 
-Sistema de chatbot con Retrieval Augmented Generation (RAG) que permite consultar documentos PDF y ejecutar código Python de forma segura. Utiliza Google Gemini como modelo de lenguaje y una arquitectura de microservicios con Docker Compose para facilitar el despliegue y escalabilidad.
+Sistema de chatbot con Retrieval Augmented Generation (RAG) **multimodal** que permite consultar documentos PDF con texto e imágenes, y ejecutar código Python de forma segura. Utiliza Google Gemini como modelo de lenguaje, Jina embeddings para procesamiento multimodal y una arquitectura de microservicios con Docker Compose para facilitar el despliegue y escalabilidad.
 
 ## 🏗️ Arquitectura
 
@@ -9,7 +9,7 @@ Sistema de chatbot con Retrieval Augmented Generation (RAG) que permite consulta
 - **qdrant**: Base de datos vectorial para almacenamiento de embeddings
 - **pyexec**: Microservicio para ejecutar expresiones Python de forma segura
 - **app**: Interfaz web con Gradio + LangChain + Google Gemini que orquesta RAG
-- **ingest**: Job de procesamiento para ingestar PDFs en Qdrant con embeddings de Google
+- **ingest**: Job de procesamiento para ingestar PDFs en Qdrant con embeddings multimodales de Jina (texto + imágenes)
 
 ## ⚡ Inicio Rápido
 
@@ -18,7 +18,8 @@ Sistema de chatbot con Retrieval Augmented Generation (RAG) que permite consulta
 **Obligatorios:**
 - Docker (versión 20.10 o superior)
 - Docker Compose (versión 2.0 o superior)
-- **Google API Key** (para acceso a Gemini)
+- **Google API Key** (para acceso a Gemini LLM)
+- **Jina API Key** (para embeddings y reranking)
 - Mínimo 2GB RAM disponible
 - Al menos 2GB de espacio en disco
 
@@ -31,9 +32,10 @@ docker --version && docker compose version
 
 Para un setup completo en menos de 5 minutos:
 
-1. **Configurar API Key:**
+1. **Configurar API Keys:**
    ```bash
-   export GOOGLE_API_KEY="tu_api_key_aqui"
+   export GOOGLE_API_KEY="tu_google_api_key_aqui"
+   export JINA_API_KEY="tu_jina_api_key_aqui"
    ```
 
 2. **Clonar y preparar:**
@@ -63,21 +65,33 @@ wget -P docs/ "https://example.com/sample.pdf"
 - Tamaño máximo por PDF: 100MB
 - Formatos soportados: PDF únicamente
 - Mínimo contenido por documento: 10 caracteres
+- **Imágenes:** Máximo 1024x1024px, 5MB por imagen
+- **Procesamiento:** Las imágenes se extraen automáticamente durante la ingesta
 
-#### 2. Configurar Google API Key
+#### 2. Configurar API Keys
 
 ```bash
-# Configurar variable de entorno
+# Configurar variables de entorno
 export GOOGLE_API_KEY="tu_google_api_key_aqui"
+export JINA_API_KEY="tu_jina_api_key_aqui"
 
 # O crear archivo .env
 echo "GOOGLE_API_KEY=tu_google_api_key_aqui" > .env
+echo "JINA_API_KEY=tu_jina_api_key_aqui" >> .env
 ```
 
-**Cómo obtener Google API Key:**
+**Cómo obtener las API Keys:**
+
+**Google API Key (para Gemini LLM):**
 1. Ir a [Google AI Studio](https://makersuite.google.com/app/apikey)
 2. Crear una nueva API key
 3. Habilitar Generative AI API
+
+**Jina API Key (para embeddings y reranking):**
+1. Ir a [Jina AI](https://jina.ai/)
+2. Crear una cuenta gratuita
+3. Obtener tu API key desde el dashboard
+4. Verificar los límites en [Jina Pricing](https://jina.ai/pricing)
 
 #### 3. Levantar Servicios
 
@@ -94,14 +108,24 @@ docker compose ps
 #### 4. Procesar Documentos
 
 ```bash
-# Ejecutar ingesta de PDFs
+# Ejecutar ingesta completa de todos los PDFs
 docker compose run --rm ingest
+
+# O procesar un solo PDF sin rehacer toda la colección
+python add_single_pdf.py docs/nuevo_documento.pdf
 
 # Verificar ingesta exitosa
 docker logs ingest
 ```
 
 **Tiempo estimado:** 1-5 minutos (según cantidad de PDFs)
+
+**📝 Procesamiento individual:**
+Para añadir documentos nuevos sin reprocesar toda la colección, utiliza el script `add_single_pdf.py`:
+- ✅ Más rápido para documentos individuales
+- ✅ No requiere Docker (pero sí las variables de entorno)
+- ✅ Validaciones automáticas de formato y conexión
+- ✅ Preserva documentos ya procesados
 
 #### 5. Acceder a la Interfaz
 
@@ -122,10 +146,12 @@ docker logs ingest
 ```
 
 **Características:**
-- Respuestas incluyen citas con documento y página
-- Búsqueda semántica en el contenido
-- Soporte para consultas en múltiples idiomas
-- Análisis comparativo entre documentos
+- 📝 **Citas mejoradas:** Referencias inline con documento, página y contexto detallado
+- 🔍 **Búsqueda semántica:** Vectores multimodales de Jina para alta precisión
+- 🌍 **Soporte multilingüe:** Consultas en múltiples idiomas nativamente
+- 🔄 **Análisis comparativo:** Entre documentos y secciónes
+- 🎯 **Reranking inteligente:** Jina Rerank optimiza relevancia de resultados
+- 📊 **Mapeo de fuentes:** Identificación precisa de documentos citados
 
 ### Ejecución de Código Python
 
@@ -162,6 +188,34 @@ Puedes combinar ambas funcionalidades:
 "El paper menciona una muestra de 200 participantes. ¿Es estadísticamente significativo con un margen de error del 3.5%? python: 1.96/0.035**2 * 0.25"
 ```
 
+### Consultas Multimodales (Texto + Imágenes)
+
+El sistema ahora soporta **RAG multimodal** que procesa tanto texto como imágenes extraídas de los PDFs:
+
+**Características multimodales:**
+- 🖼️ **Extracción de imágenes:** Automática desde PDFs durante la ingesta
+- 🔍 **Búsqueda visual:** Encuentra imágenes relevantes según consultas de texto
+- 🤝 **Contexto híbrido:** Combina información textual y visual en las respuestas
+- 🎯 **Reranking inteligente:** Jina Rerank mejora la relevancia de resultados mixtos
+
+**Ejemplos de consultas multimodales:**
+```
+- "¿Qué gráficos muestran la tendencia de ventas?"
+- "Encuentra diagramas sobre arquitectura de microservicios"
+- "Muestra las imágenes relacionadas con el proceso de manufactura"
+- "Compara las tablas de resultados experimentales"
+- "¿Hay capturas de pantalla de la interfaz de usuario?"
+```
+
+**Configuración multimodal:**
+```yaml
+ENABLE_IMAGE_INGEST: true              # Habilitar procesamiento de imágenes
+IMAGE_MAX_SIDE_PX: 1024                # Tamaño máximo de imagen (píxeles)
+IMAGE_MAX_BYTES: 5242880               # Tamaño máximo (5MB)
+TOP_K_SEARCH: 50                       # Búsqueda inicial
+TOP_N_RERANK: 10                       # Resultados finales tras reranking
+```
+
 ### Ejemplos Completos
 
 Para ejemplos detallados con respuestas esperadas, consulta **[EXAMPLES.md](EXAMPLES.md)** que incluye:
@@ -183,7 +237,7 @@ GOOGLE_API_KEY: "${GOOGLE_API_KEY}"      # API Key de Google AI (REQUERIDA)
 
 # Configuración de Qdrant
 QDRANT_URL: http://qdrant:6333           # URL interna de Qdrant
-COLLECTION_NAME: corpus_pdf              # Nombre de la colección vectorial
+COLLECTION_NAME: rag_multimodal          # Nombre de la colección vectorial multimodal
 
 # Configuración de la interfaz
 GRADIO_SERVER_NAME: 0.0.0.0             # Host de Gradio
@@ -207,9 +261,10 @@ MAX_EXPR_COMPLEXITY: 100                 # Límite de complejidad AST
 
 #### Servicio Ingest
 ```yaml
-# Configuración de embeddings (Google)
-EMBEDDING_MODEL: models/embedding-001    # Modelo de Google para embeddings
-EMBEDDING_PROVIDER: google              # Proveedor de embeddings
+# Configuración de embeddings (Jina)
+EMBEDDING_MODEL: jina-embeddings-v4     # Modelo de Jina para embeddings
+EMBEDDING_PROVIDER: jina                # Proveedor de embeddings
+JINA_API_KEY: "${JINA_API_KEY}"          # API Key de Jina (REQUERIDA)
 DOCUMENTS_DIR: /app/docs                # Carpeta interna de documentos
 
 # Procesamiento de PDFs
@@ -217,6 +272,18 @@ MAX_PDF_SIZE_MB: 100                     # Tamaño máximo por PDF
 CHUNK_SIZE: 1200                         # Tamaño de chunks en caracteres
 CHUNK_OVERLAP: 180                       # Solapamiento entre chunks
 MIN_CONTENT_LENGTH: 10                   # Contenido mínimo por chunk
+
+# Configuración multimodal
+ENABLE_IMAGE_INGEST: true                # Habilitar extracción de imágenes
+IMAGE_MAX_SIDE_PX: 1024                  # Tamaño máximo de imagen (píxeles)
+IMAGE_MAX_BYTES: 5242880                 # Tamaño máximo de imagen (5MB)
+
+# Configuración de reranking y búsqueda
+JINA_RERANK_MODEL: jina-rerank-m0        # Modelo de reranking de Jina
+TOP_K_SEARCH: 50                         # Resultados iniciales de búsqueda
+TOP_N_RERANK: 10                         # Resultados finales tras reranking
+PARALLEL_RETRIEVAL: true                 # Habilitar recuperación paralela
+MAX_RETRIEVAL_WORKERS: 2                 # Máximo workers para procesamiento paralelo
 ```
 
 ### Modelo LLM Configurado
@@ -231,38 +298,36 @@ Este sistema utiliza únicamente **Google Gemini 2.5 Flash Lite** como modelo de
 
 **Configuración requerida:**
 ```bash
-# Solo necesitas tu Google API Key
-export GOOGLE_API_KEY="tu_api_key_aqui"
+# API Keys necesarias
+export GOOGLE_API_KEY="tu_google_api_key_aqui"    # Para Gemini LLM
+export JINA_API_KEY="tu_jina_api_key_aqui"        # Para embeddings y reranking
 ```
 
 ### Modelo de Embeddings Configurado
 
-El sistema utiliza **Google `models/embedding-001`** para generar embeddings:
+El sistema utiliza **Jina `jina-embeddings-v4`** para generar embeddings:
 
 **Características:**
-- 📊 **Alta calidad:** 768 dimensiones optimizadas para RAG
-- 🚀 **Rápido:** Generación via API sin procesamiento local
+- 📊 **Alta calidad:** Embeddings de última generación optimizados para RAG multimodal
+- 🚀 **Rápido:** Generación via API de Jina sin procesamiento local
 - 🔄 **Consistente:** Embeddings estables entre sesiones
+- 🌍 **Multimodal:** Soporte para texto e imágenes con el mismo modelo
 
 **Configuración actual:**
-   ```yaml
-   # En docker-compose.yml servicio ingest
-   EMBEDDING_MODEL: sentence-transformers/all-mpnet-base-v2
-   ```
+```yaml
+# En docker-compose.yml servicio ingest
+EMBEDDING_MODEL: jina-embeddings-v4
+EMBEDDING_PROVIDER: jina
+JINA_API_KEY: "${JINA_API_KEY}"
+```
 
-2. **Actualizar dimensiones en código:**
-   ```python
-   # En ingest.py, ajustar:
-   # all-MiniLM-L6-v2: 384 dimensiones
-   # all-mpnet-base-v2: 768 dimensiones
-   ```
-
-3. **Limpiar y re-ingestar:**
-   ```bash
-   docker compose down -v  # Elimina volúmenes
-   docker compose up -d qdrant
-   docker compose run --rm ingest
-   ```
+**Reranker incluido:**
+El sistema también utiliza **Jina Rerank M0** para mejorar la relevancia de los resultados:
+```yaml
+JINA_RERANK_MODEL: jina-rerank-m0
+TOP_K_SEARCH: 50      # Búsqueda inicial
+TOP_N_RERANK: 10      # Resultados finales tras reranking
+```
 
 ## 🔧 Troubleshooting
 
@@ -281,18 +346,19 @@ docker compose down -v              # Eliminar volúmenes
 docker compose pull                 # Actualizar imágenes
 ```
 
-#### 2. Modelo no descarga
+#### 2. Errores de API Keys
 
-**Error:** `ollama pull` falla o es muy lento
+**Error:** Fallos de autenticación o límites de API
 ```bash
-# Verificar espacio en disco
-df -h
+# Verificar variables de entorno
+echo $GOOGLE_API_KEY
+echo $JINA_API_KEY
 
-# El modelo configurado por defecto ya es muy ligero
-docker exec -it ollama ollama pull llama3.2:1b
+# Comprobar conectividad con APIs
+curl -H "Authorization: Bearer $JINA_API_KEY" https://api.jina.ai/v1/embeddings
 
-# Verificar conectividad
-docker exec -it ollama curl -I https://ollama.ai
+# Verificar logs de servicios
+docker compose logs app | grep -i "api\|error"
 ```
 
 #### 3. Ingesta falla
@@ -360,25 +426,28 @@ docker compose ps
 
 # Health checks específicos
 docker inspect --format='{{.State.Health.Status}}' qdrant
-docker inspect --format='{{.State.Health.Status}}' ollama
+docker inspect --format='{{.State.Health.Status}}' pyexec
 ```
 
 ### Rendimiento
 
 **Optimizar memoria:**
 ```bash
-# Limitar memoria de Ollama
-docker update --memory=2g ollama
-
-# Monitorear uso
+# Monitorear uso de memoria
 docker stats
+
+# Limitar memoria de servicios si es necesario
+docker update --memory=1g qdrant
+docker update --memory=512m pyexec
 ```
 
 **Optimizar velocidad:**
-- llama3.2:1b ya está optimizado para velocidad por defecto
-- Para más potencia: cambiar a mistral:7b-instruct
+- Google Gemini 2.5 Flash Lite ya está optimizado para velocidad
+- Jina embeddings v4 proporciona alta velocidad via API
+- Habilitar procesamiento paralelo: `PARALLEL_RETRIEVAL=true`
 - Ajustar CHUNK_SIZE según hardware (default: 1200)
 - Considerar SSD para volúmenes Docker
+- Optimizar reranking: ajustar `TOP_K_SEARCH` y `TOP_N_RERANK`
 
 ## 🧪 Testing
 
@@ -400,7 +469,6 @@ python validate_acceptance_criteria.py
 **Endpoints de salud:**
 - App: http://localhost:8080/health
 - Qdrant: http://localhost:6333/healthz
-- Ollama: http://localhost:11434/api/tags
 - PyExec: http://localhost:8001/health
 
 **Métricas disponibles:**
@@ -453,7 +521,7 @@ deploy:
 ├── Dockerfile          # Imagen multi-etapa
 ├── requirements.*.txt  # Dependencias por servicio
 ├── tests/              # Suite de testing
-└── docs/              # Documentos para ingestar
+└── docs/               # Documentos para ingestar
 ```
 
 **Flujo de desarrollo:**
@@ -480,5 +548,5 @@ deploy:
 
 ---
 
-**Última actualización:** Agosto 2024 (actualizado modelo llama3.2:1b)
-**Versión:** 1.0.0
+**Última actualización:** Agosto 2025 (multimodal RAG con Jina embeddings y reranking)
+**Versión:** 2.0.0

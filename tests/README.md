@@ -124,7 +124,8 @@ python -m pytest -m "unit or integration"
 Set these for consistent test behavior:
 ```bash
 export QDRANT_URL="http://localhost:6333"
-export OLLAMA_BASE_URL="http://localhost:11434"
+export GOOGLE_API_KEY="your_test_google_api_key"
+export JINA_API_KEY="your_test_jina_api_key"
 export PYEXEC_URL="http://localhost:8001"
 export MAX_QUERY_LENGTH="2000"
 export PYEXEC_TIMEOUT_SEC="5"

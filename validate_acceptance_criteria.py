@@ -24,9 +24,8 @@ class AcceptanceCriteriaValidator:
         self.results = {}
         self.services = {
             'qdrant': 'http://localhost:6333',
-            'ollama': 'http://localhost:11434', 
             'gradio': 'http://localhost:7860',
-            'pyexec': 'http://pyexec:8001'  # Internal service
+            'pyexec': 'http://localhost:8001'  # PyExec service
         }
         
     def log_result(self, test_name: str, passed: bool, details: str = "", 
@@ -55,8 +54,8 @@ class AcceptanceCriteriaValidator:
         
         health_endpoints = {
             'qdrant': f"{self.services['qdrant']}/healthz",
-            'ollama': f"{self.services['ollama']}/api/tags",
             'gradio': f"{self.services['gradio']}/",
+            'pyexec': f"{self.services['pyexec']}/health",
         }
         
         for service, url in health_endpoints.items():
@@ -310,7 +309,7 @@ class AcceptanceCriteriaValidator:
                 compose_content = f.read()
             
             # Check for health check definitions
-            health_check_services = ['qdrant', 'ollama', 'pyexec']
+            health_check_services = ['qdrant', 'pyexec']
             health_checks_found = 0
             
             for service in health_check_services:
