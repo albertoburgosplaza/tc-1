@@ -505,129 +505,6 @@ def insert_vectors_to_qdrant():
 
 retry_operation("Vector insertion to Qdrant", insert_vectors_to_qdrant)
 
-def insert_image_vectors_to_qdrant(image_files: List[str] = None):
-    """
-    Insertar vectores de imágenes en Qdrant usando el esquema multimodal
-    
-    Args:
-        image_files: Lista opcional de archivos de imagen a procesar.
-                    Si no se proporciona, busca todas las imágenes extraídas.
-    """
-    from multimodal_schema import MultimodalPayload
-    import glob
-    
-    if not ENABLE_IMAGE_INGEST:
-        logger.info("Image ingestion disabled, skipping image embeddings")
-        return {"total_inserted": 0, "total_skipped": 0, "success": True}
-    
-    # Si no se proporcionan archivos, buscar todas las imágenes extraídas (comportamiento legacy)
-    if image_files is None:
-        image_pattern = f"{STORAGE_BASE_PATH}/**/*.png"
-        image_files = glob.glob(image_pattern, recursive=True)
-    
-    if not image_files:
-        logger.info("No images found for embedding generation")
-        return {"total_inserted": 0, "total_skipped": 0, "success": True}
-    
-    logger.info(f"Starting image embedding generation for {len(image_files)} images")
-    
-    # Procesar imágenes en lotes
-    total_batches = (len(image_files) + BATCH_SIZE - 1) // BATCH_SIZE
-    logger.info(f"Processing images in {total_batches} batches of {BATCH_SIZE} each")
-    
-    total_inserted = 0
-    total_skipped = 0
-    
-    for i in range(0, len(image_files), BATCH_SIZE):
-        batch_num = (i // BATCH_SIZE) + 1
-        batch_files = image_files[i:i + BATCH_SIZE]
-        
-        logger.info(f"Processing image batch {batch_num}/{total_batches} ({len(batch_files)} images)")
-        
-        try:
-            # Generar embeddings para las imágenes
-            embeddings = emb.embed_images(batch_files)
-            
-            # Crear puntos multimodales para Qdrant
-            points = []
-            batch_inserted = 0
-            batch_skipped = 0
-            
-            for j, (image_file, embedding) in enumerate(zip(batch_files, embeddings)):
-                try:
-                    # Extraer metadatos del path de la imagen
-                    path_parts = Path(image_file).parts
-                    doc_id = path_parts[-3]  # e.g., MU-EBROKER_CREACION_USUARIOS_WS
-                    page_dir = path_parts[-2]  # e.g., p5
-                    page_number = int(page_dir[1:])  # extraer número de página
-                    image_hash = Path(image_file).stem  # usar filename como hash
-                    
-                    # Crear payload multimodal para imagen
-                    multimodal_payload = MultimodalPayload.from_image_data(
-                        image_data=b"placeholder",  # Los datos reales no se necesitan en el payload
-                        doc_id=doc_id,
-                        page_number=page_number,
-                        image_index=0,  # Podríamos calcular esto basado en el orden en la página
-                        source_uri=f"{doc_id}.pdf",
-                        thumbnail_uri=str(Path(image_file).relative_to(Path(STORAGE_BASE_PATH))),
-                        width=800,  # Usar dimensiones por defecto, podrían extraerse si necesitamos
-                        height=600,
-                        embedding_model=EMB_MODEL
-                    )
-                    
-                    # Usar el hash del archivo como hash del payload
-                    multimodal_payload.hash = image_hash
-                    
-                    # Validar payload
-                    if not multimodal_payload.validate():
-                        logger.warning(f"Invalid image payload for {image_file}, skipping")
-                        batch_skipped += 1
-                        continue
-                    
-                    # Crear punto para Qdrant usando UUID del payload
-                    point_id = multimodal_payload.id
-                    payload_dict = multimodal_payload.to_dict()
-                    
-                    points.append(models.PointStruct(
-                        id=point_id,
-                        vector=embedding,
-                        payload=payload_dict
-                    ))
-                    batch_inserted += 1
-                    
-                except Exception as e:
-                    logger.error(f"Failed to create multimodal payload for image {image_file}: {e}")
-                    batch_skipped += 1
-                    continue
-            
-            # Insertar lote en Qdrant
-            if points:
-                client.upsert(collection_name=COLLECTION, points=points)
-                logger.info(f"Image batch {batch_num} inserted: {batch_inserted} points, skipped: {batch_skipped}")
-            else:
-                logger.warning(f"Image batch {batch_num} had no valid points to insert")
-            
-            total_inserted += batch_inserted
-            total_skipped += batch_skipped
-            
-        except Exception as e:
-            logger.error(f"Failed to process image batch {batch_num}: {str(e)}")
-            # Continuar con el siguiente lote en lugar de fallar completamente
-            continue
-    
-    logger.info(f"Image embedding insertion completed - inserted: {total_inserted}, skipped: {total_skipped}, total: {len(image_files)}")
-    
-    result = {
-        "total_inserted": total_inserted,
-        "total_skipped": total_skipped,
-        "success": total_inserted > 0 or len(image_files) == 0,
-        "total_processed": len(image_files)
-    }
-    
-    if total_inserted > 0:
-        logger.info(f"Successfully added {total_inserted} image embeddings to collection '{COLLECTION}'")
-    
-    return result
 
 def generate_and_insert_image_descriptions():
     """
@@ -657,6 +534,13 @@ def generate_and_insert_image_descriptions():
     total_inserted = 0
     total_skipped = 0
     total_description_errors = 0
+    
+    # Track deduplication
+    dedup_keys = set()
+    
+    # Métricas detalladas
+    description_generation_start = time.time()
+    total_embedding_time = 0
     
     for i in range(0, len(image_files), BATCH_SIZE):
         batch_num = (i // BATCH_SIZE) + 1
@@ -720,7 +604,11 @@ def generate_and_insert_image_descriptions():
                 descriptions_text = [item['description'] for item in descriptions_data]
                 
                 # Generar embeddings para las descripciones
+                embedding_start = time.time()
                 embeddings = emb.embed_documents(descriptions_text)
+                embedding_time = time.time() - embedding_start
+                total_embedding_time += embedding_time
+                logger.debug(f"Batch {batch_num} embedding generation took {embedding_time:.2f}s for {len(descriptions_text)} descriptions")
                 
                 # Crear puntos multimodales para Qdrant
                 points = []
@@ -738,6 +626,15 @@ def generate_and_insert_image_descriptions():
                             # Ruta relativa de la imagen para referencia
                             thumbnail_uri=str(Path(desc_data['image_file']).relative_to(Path(STORAGE_BASE_PATH)))
                         )
+                        
+                        # Verificar deduplicación
+                        dedup_key = create_deduplication_key(multimodal_payload)
+                        if dedup_key in dedup_keys:
+                            batch_skipped += 1
+                            logger.debug(f"Skipped duplicate image description: {dedup_key}")
+                            continue
+                        
+                        dedup_keys.add(dedup_key)
                         
                         # Validar payload
                         if not multimodal_payload.validate():
@@ -776,12 +673,28 @@ def generate_and_insert_image_descriptions():
             # Continuar con el siguiente lote
             continue
     
-    # Mostrar métricas del ImageDescriptor
+    # Calcular métricas finales
+    total_processing_time = time.time() - description_generation_start
+    
+    # Mostrar métricas del ImageDescriptor con cache hit ratio
     if image_descriptor:
         metrics = image_descriptor.get_metrics()
         logger.info(f"Image description metrics: {metrics}")
+        
+        # Calcular cache hit ratio si disponible en las métricas
+        if 'cache_hits' in metrics and 'total_requests' in metrics:
+            cache_hit_ratio = metrics['cache_hits'] / metrics['total_requests'] * 100 if metrics['total_requests'] > 0 else 0
+            logger.info(f"Cache hit ratio: {cache_hit_ratio:.1f}%")
+    
+    # Métricas detalladas de procesamiento
+    logger.info(f"Image description processing metrics:")
+    logger.info(f"  - Total processing time: {total_processing_time:.2f}s")
+    logger.info(f"  - Total embedding generation time: {total_embedding_time:.2f}s")
+    logger.info(f"  - Avg embedding time per batch: {total_embedding_time/total_batches:.2f}s")
+    logger.info(f"  - Processing rate: {len(image_files)/total_processing_time:.1f} images/sec")
     
     logger.info(f"Image description insertion completed - inserted: {total_inserted}, skipped: {total_skipped}, errors: {total_description_errors}, total: {len(image_files)}")
+    logger.info(f"Image description deduplication: {len(dedup_keys)} unique vectors from {len(image_files)} images")
     
     result = {
         "total_inserted": total_inserted,
@@ -796,8 +709,6 @@ def generate_and_insert_image_descriptions():
     
     return result
 
-# Procesar imágenes después del texto
-retry_operation("Image vector insertion to Qdrant", insert_image_vectors_to_qdrant)
 
 # Generar e insertar descripciones de imágenes
 retry_operation("Image description generation and insertion", generate_and_insert_image_descriptions)

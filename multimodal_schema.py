@@ -17,6 +17,7 @@ class Modality(str, Enum):
     """Enum para tipos de modalidad soportados"""
     TEXT = "text"
     IMAGE = "image"
+    IMAGE_DESCRIPTION = "image_description"
 
 @dataclass
 class MultimodalPayload:
@@ -25,7 +26,7 @@ class MultimodalPayload:
     
     Campos comunes requeridos:
     - id: UUID único para cada vector
-    - modality: Tipo de contenido (text|image)
+    - modality: Tipo de contenido (text|image|image_description)
     - doc_id: Identificador del documento padre
     - page_number: Número de página en el documento
     - source_uri: Ruta al archivo original
@@ -36,6 +37,7 @@ class MultimodalPayload:
     Campos específicos por modalidad:
     - Para texto: page_content, content_preview
     - Para imagen: thumbnail_uri, width, height, image_index, bbox
+    - Para descripción de imagen: page_content, content_preview, thumbnail_uri (opcional)
     
     Campos opcionales:
     - title: Título del documento
@@ -191,6 +193,140 @@ class MultimodalPayload:
             **kwargs
         )
     
+    @classmethod
+    def from_image_description(
+        cls,
+        page_content: str,
+        doc_id: str,
+        page_number: int,
+        source_uri: str,
+        image_hash: str,
+        thumbnail_uri: str,
+        embedding_model: str,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        image_index: Optional[int] = None,
+        bbox: Optional[Dict[str, float]] = None,
+        title: Optional[str] = None,
+        author: Optional[str] = None,
+        creation_date: Optional[str] = None,
+        **kwargs
+    ) -> 'MultimodalPayload':
+        """
+        Crea payload para descripción de imagen.
+        
+        Args:
+            page_content: Descripción textual de la imagen generada por AI
+            doc_id: Identificador del documento
+            page_number: Número de página
+            source_uri: Ruta del archivo fuente
+            image_hash: Hash SHA-256 de la imagen original
+            thumbnail_uri: Ruta del thumbnail de la imagen
+            embedding_model: Modelo usado para embeddings de texto
+            width: Ancho en píxeles (opcional, para referencia)
+            height: Alto en píxeles (opcional, para referencia)
+            image_index: Índice de imagen en la página (opcional)
+            bbox: Bounding box en la página (opcional)
+            title: Título del documento (opcional)
+            author: Autor del documento (opcional)
+            creation_date: Fecha de creación original (opcional)
+            **kwargs: Otros campos opcionales
+        """
+        # Generar UUID único
+        vector_id = str(uuid.uuid4())
+        
+        # Crear preview del contenido (primeros 200 chars)
+        content_preview = page_content[:200] + "..." if len(page_content) > 200 else page_content
+        
+        return cls(
+            id=vector_id,
+            modality=Modality.IMAGE_DESCRIPTION,
+            doc_id=doc_id,
+            page_number=page_number,
+            source_uri=source_uri,
+            hash=image_hash,  # Usar hash de la imagen original
+            embedding_model=embedding_model,
+            created_at=datetime.now().isoformat(),
+            page_content=page_content,
+            content_preview=content_preview,
+            thumbnail_uri=thumbnail_uri,
+            width=width,
+            height=height,
+            image_index=image_index,
+            bbox=bbox,
+            title=title,
+            author=author,
+            creation_date=creation_date,
+            **kwargs
+        )
+    
+    @classmethod
+    def from_image_description(
+        cls,
+        page_content: str,
+        doc_id: str,
+        page_number: int,
+        source_uri: str,
+        image_hash: str,
+        thumbnail_uri: str,
+        embedding_model: str,
+        width: Optional[int] = None,
+        height: Optional[int] = None,
+        image_index: Optional[int] = None,
+        bbox: Optional[Dict[str, float]] = None,
+        title: Optional[str] = None,
+        author: Optional[str] = None,
+        creation_date: Optional[str] = None,
+        **kwargs
+    ) -> 'MultimodalPayload':
+        """
+        Crea payload para descripción de imagen.
+        
+        Args:
+            page_content: Descripción textual de la imagen generada por AI
+            doc_id: Identificador del documento
+            page_number: Número de página
+            source_uri: Ruta del archivo fuente
+            image_hash: Hash SHA-256 de la imagen original
+            thumbnail_uri: Ruta del thumbnail de la imagen
+            embedding_model: Modelo usado para embeddings de texto
+            width: Ancho en píxeles (opcional, para referencia)
+            height: Alto en píxeles (opcional, para referencia)
+            image_index: Índice de imagen en la página (opcional)
+            bbox: Bounding box en la página (opcional)
+            title: Título del documento (opcional)
+            author: Autor del documento (opcional)
+            creation_date: Fecha de creación original (opcional)
+            **kwargs: Otros campos opcionales
+        """
+        # Generar UUID único
+        vector_id = str(uuid.uuid4())
+        
+        # Crear preview del contenido (primeros 200 chars)
+        content_preview = page_content[:200] + "..." if len(page_content) > 200 else page_content
+        
+        return cls(
+            id=vector_id,
+            modality=Modality.IMAGE_DESCRIPTION,
+            doc_id=doc_id,
+            page_number=page_number,
+            source_uri=source_uri,
+            hash=image_hash,  # Usar hash de la imagen original
+            embedding_model=embedding_model,
+            created_at=datetime.now().isoformat(),
+            page_content=page_content,
+            content_preview=content_preview,
+            thumbnail_uri=thumbnail_uri,
+            width=width,
+            height=height,
+            image_index=image_index,
+            bbox=bbox,
+            title=title,
+            author=author,
+            creation_date=creation_date,
+            **kwargs
+        )
+    
     def validate(self) -> bool:
         """
         Valida que el payload tenga todos los campos requeridos según modalidad.
@@ -220,6 +356,9 @@ class MultimodalPayload:
             ]
             return all(field is not None for field in required_image) and \
                    self.width > 0 and self.height > 0 and self.image_index >= 0
+                   
+        elif self.modality == Modality.IMAGE_DESCRIPTION:
+            return self.page_content is not None and len(self.page_content.strip()) > 0
         
         return False
 
@@ -280,6 +419,9 @@ class SchemaValidator:
                 MultimodalPayload(**{k: v for k, v in payload.items() 
                                    if k in MultimodalPayload.__dataclass_fields__})
             elif payload.get('modality') == Modality.IMAGE.value:
+                MultimodalPayload(**{k: v for k, v in payload.items()
+                                   if k in MultimodalPayload.__dataclass_fields__})
+            elif payload.get('modality') == Modality.IMAGE_DESCRIPTION.value:
                 MultimodalPayload(**{k: v for k, v in payload.items()
                                    if k in MultimodalPayload.__dataclass_fields__})
             else:
