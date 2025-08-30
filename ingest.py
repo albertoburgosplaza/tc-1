@@ -24,7 +24,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
-COLLECTION = os.getenv("COLLECTION_NAME", "corpus_pdf")
+COLLECTION = os.getenv("COLLECTION_NAME", os.getenv("QDRANT_COLLECTION", "rag_multimodal"))
 DOCS_DIR = os.getenv("DOCUMENTS_DIR", "docs")
 # Configuración de embeddings (alineada con app.py)
 EMB_MODEL = os.getenv("EMBEDDING_MODEL", "models/embedding-001")
@@ -309,14 +309,12 @@ client = retry_operation("Qdrant client creation", create_qdrant_client)
 def setup_qdrant_collection():
     """Configurar colección de Qdrant con soporte multimodal y manejo de errores"""
     global COLLECTION
-    from multimodal_migration import QdrantMigrator
+    
     from multimodal_schema import MULTIMODAL_COLLECTION_CONFIG
     
     collections = client.get_collections().collections
     existing = {c.name for c in collections}
     
-    # Verificar si necesitamos migración de colección legacy
-    legacy_collection_exists = COLLECTION in existing
     multimodal_collection = MULTIMODAL_COLLECTION_CONFIG["collection_name"]
     multimodal_exists = multimodal_collection in existing
     
@@ -326,38 +324,10 @@ def setup_qdrant_collection():
     logger.info(f"Using distance metric: {distance_metric.name} for provider: {EMB_PROVIDER}")
     
     if not multimodal_exists:
-        if legacy_collection_exists:
-            # Migrar colección legacy existente al esquema multimodal
-            logger.info(f"Migrating legacy collection {COLLECTION} to multimodal schema")
-            try:
-                migrator = QdrantMigrator(client, EMB_MODEL)
-                migration_result = migrator.migrate_collection(
-                    source_collection=COLLECTION,
-                    target_collection=multimodal_collection,
-                    vector_size=dim,
-                    distance=distance_metric,
-                    create_backup=True
-                )
-                
-                if migration_result["success"]:
-                    logger.info(f"Migration completed: {migration_result['migrated_points']} points migrated")
-                    # Actualizar COLLECTION global para usar la nueva colección multimodal
-                    COLLECTION = multimodal_collection
-                else:
-                    logger.error(f"Migration failed: {migration_result['errors']}")
-                    raise Exception(f"Failed to migrate collection: {migration_result['errors']}")
-                    
-            except Exception as e:
-                logger.error(f"Migration failed: {e}")
-                logger.info("Falling back to creating new multimodal collection")
-                # Crear nueva colección multimodal vacía
-                _create_multimodal_collection(multimodal_collection, dim, distance_metric)
-                COLLECTION = multimodal_collection
-        else:
-            # Crear nueva colección multimodal
-            logger.info(f"Creating new multimodal collection: {multimodal_collection}")
-            _create_multimodal_collection(multimodal_collection, dim, distance_metric)
-            COLLECTION = multimodal_collection
+        # Crear nueva colección multimodal
+        logger.info(f"Creating new multimodal collection: {multimodal_collection}")
+        _create_multimodal_collection(multimodal_collection, dim, distance_metric)
+        COLLECTION = multimodal_collection
     else:
         # La colección multimodal ya existe
         logger.info(f"Using existing multimodal collection: {multimodal_collection}")

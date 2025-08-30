@@ -104,7 +104,7 @@ class ParallelRetriever:
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "google")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY", "")
 QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
-COLLECTION = os.getenv("COLLECTION_NAME", "corpus_pdf")
+COLLECTION = os.getenv("COLLECTION_NAME", os.getenv("QDRANT_COLLECTION", "rag_multimodal"))
 PYEXEC_URL = os.getenv("PYEXEC_URL", "http://localhost:8001")
 
 # Configuración del reranker
