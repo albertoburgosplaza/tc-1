@@ -244,9 +244,12 @@ GRADIO_SERVER_NAME: 0.0.0.0             # Host de Gradio
 GRADIO_SERVER_PORT: 7860                 # Puerto de Gradio
 
 # Validación de entrada
-MAX_HISTORY_CHARS: 8000                  # Máximo caracteres en historial
 MAX_QUERY_LENGTH: 2000                   # Máximo caracteres por consulta
 MIN_QUERY_LENGTH: 1                      # Mínimo caracteres por consulta
+
+# Gestión de Memoria y Conversaciones
+MAX_HISTORY_CHARS: 8000                  # Límite de caracteres antes de resumir historial
+SLIDING_WINDOW_TURNS: 6                  # Turnos recientes preservados tras resumen
 
 # Integración Python
 PYEXEC_URL: http://pyexec:8001           # URL del servicio Python
@@ -328,6 +331,57 @@ JINA_RERANK_MODEL: jina-rerank-m0
 TOP_K_SEARCH: 50      # Búsqueda inicial
 TOP_N_RERANK: 10      # Resultados finales tras reranking
 ```
+
+### Sistema de Gestión de Memoria Contextual
+
+El chatbot implementa un **sistema automático de gestión de memoria** que mantiene conversaciones largas sin perder contexto relevante:
+
+#### Funcionamiento Automático
+```python
+# Monitoreo continuo del tamaño del contexto
+MAX_HISTORY_CHARS: 8000                 # Límite antes de activar resumen
+SLIDING_WINDOW_TURNS: 6                 # Turnos recientes siempre preservados
+
+# Trigger automático cuando se excede el límite:
+# 1. Analiza toda la conversación
+# 2. Extrae información crítica (nombres, fechas, decisiones, números)
+# 3. Genera resumen inteligente con LLM
+# 4. Conserva últimos 6 turnos + resumen optimizado
+```
+
+#### Información Preservada Automáticamente
+- **📅 Fechas**: Formatos YYYY-MM-DD y DD/MM/YYYY
+- **👤 Nombres propios**: Personas, lugares, organizaciones
+- **⚖️ Decisiones**: Preferencias expresadas ("prefiero X", "decidí Y")
+- **⚙️ Configuraciones**: Comandos y ajustes técnicos
+- **🔢 Números importantes**: Con unidades (euros, porcentajes, medidas)
+- **🐛 Problemas técnicos**: Errores y sus soluciones
+- **🏗️ Contexto del dominio**: Terminología especializada
+
+#### Ejemplo de Optimización
+```
+Conversación original (12,000 caracteres):
+[Turno 1-15: conversación extensa sobre configuración]
+
+Después del resumen automático (7,500 caracteres):
+[RESUMEN: Usuario configuró API keys (Google, Jina), procesó 3 PDFs
+sobre machine learning, prefiere explicaciones técnicas detalladas,
+tuvo error con Qdrant que se resolvió reiniciando servicio]
+[Turno 10-15: últimos 6 turnos completos preservados]
+```
+
+#### Configuración Personalizable
+```yaml
+# Ajustar límites según necesidades
+MAX_HISTORY_CHARS: 12000               # Conversaciones más largas
+SLIDING_WINDOW_TURNS: 10               # Más turnos recientes
+```
+
+**✨ Ventajas:**
+- Conversaciones ilimitadamente largas sin pérdida de contexto
+- Preservación inteligente de información crítica
+- Optimización automática de prompts para mejor rendimiento
+- Sin intervención manual requerida
 
 ## 🔧 Troubleshooting
 
