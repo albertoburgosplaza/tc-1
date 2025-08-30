@@ -12,12 +12,18 @@ from urllib3.util.retry import Retry
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import asyncio
 from functools import partial
+import base64
+from pathlib import Path
 
 from langchain_community.vectorstores import Qdrant
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_core.messages import HumanMessage, SystemMessage
 from qdrant_client import QdrantClient
-from embedding_factory import EmbeddingFactory
+from embedding_factory import EmbeddingFactory, embedding_metrics
 from jina_reranker import create_jina_reranker
+from multimodal_schema import MULTIMODAL_COLLECTION_CONFIG
+from image_extractor import image_extraction_metrics
+from image_storage import image_storage_metrics
 
 # Configurar logging estructurado
 logging.basicConfig(
@@ -229,11 +235,11 @@ except Exception as e:
 llm = current_llm  # Mantener compatibilidad con código existente
 
 # Inicializar embeddings usando factory configurable
-# Obtener modelo de variables de entorno o usar Gemini por defecto
-embedding_model = os.getenv("EMBEDDING_MODEL", "models/embedding-001")
-embedding_provider = os.getenv("EMBEDDING_PROVIDER", "google")
+# Para búsqueda multimodal usar jina-embeddings-v4
+embedding_model = os.getenv("EMBEDDING_MODEL", "jina-embeddings-v4")
+embedding_provider = os.getenv("EMBEDDING_PROVIDER", "jina")
 
-logger.info(f"Initializing embeddings: {embedding_model} ({embedding_provider})")
+logger.info(f"Initializing embeddings for multimodal search: {embedding_model} ({embedding_provider})")
 # Para queries usar retrieval.query sin late chunking
 query_task_config = {
     "task_type": "retrieval.query" if embedding_provider == "jina" else "retrieval_document",
@@ -261,7 +267,7 @@ class CustomQdrantRetriever:
         self.k = k
     
     def get_relevant_documents(self, query: str, k: int = None):
-        """Get relevant documents with proper metadata handling"""
+        """Get relevant documents with proper multimodal metadata handling"""
         from langchain_core.documents import Document
         
         # Use provided k or default
@@ -278,23 +284,54 @@ class CustomQdrantRetriever:
             with_payload=True
         )
         
-        # Convert to LangChain documents
+        # Convert to LangChain documents with multimodal metadata
         documents = []
         for result in search_result.points:
             # Extract metadata and content from payload
             payload = result.payload.copy()  # Make a copy to avoid modifying original
-            page_content = payload.pop('page_content', '')  # Remove page_content from metadata
             
-            # Create document with proper metadata
+            # Extract modality-specific content
+            modality = payload.get('modality', 'text')
+            page_content = payload.pop('page_content', '') or ''  # Handle None values from images
+            
+            # Preserve similarity score for reranking
+            metadata = payload.copy()
+            metadata['similarity_score'] = result.score
+            
+            # Handle content based on modality
+            if modality == 'image':
+                # For images, use thumbnail info as content or description
+                thumbnail_uri = payload.get('thumbnail_uri', '')
+                width = payload.get('width', 0)
+                height = payload.get('height', 0)
+                image_index = payload.get('image_index', 0)
+                bbox = payload.get('bbox', {})
+                
+                # Ensure all required image metadata is preserved in metadata
+                metadata.update({
+                    'thumbnail_uri': thumbnail_uri,
+                    'image_index': image_index,
+                    'bbox': bbox,
+                    'width': width,
+                    'height': height
+                })
+                
+                # Create descriptive content for image
+                if thumbnail_uri:
+                    page_content = f"Imagen {image_index + 1} en página {payload.get('page_number', 'N/A')} (dimensiones: {width}x{height}px, thumbnail: {thumbnail_uri})"
+                else:
+                    page_content = f"Imagen {image_index + 1} en página {payload.get('page_number', 'N/A')} (dimensiones: {width}x{height}px)"
+            
+            # Create document with enhanced metadata
             doc = Document(
                 page_content=page_content,
-                metadata=payload  # All other fields as metadata
+                metadata=metadata  # All fields including modality, similarity_score, etc.
             )
             documents.append(doc)
         
         return documents
 
-base_retriever = CustomQdrantRetriever(client, COLLECTION, emb, k=RETRIEVAL_TOP_K)
+base_retriever = CustomQdrantRetriever(client, MULTIMODAL_COLLECTION_CONFIG["collection_name"], emb, k=RETRIEVAL_TOP_K)
 
 # Crear retriever paralelo que envuelve el retriever base
 retriever = ParallelRetriever(base_retriever, max_workers=MAX_RETRIEVAL_WORKERS)
@@ -386,6 +423,32 @@ def get_app_status() -> Dict:
     else:
         reranker_metrics = {"status": "disabled"}
     
+    # Obtener métricas multimodales
+    multimodal_metrics = {}
+    try:
+        # Métricas de extracción de imágenes
+        extraction_metrics = image_extraction_metrics.get_metrics_summary()
+        
+        # Métricas de embeddings de imágenes
+        embedding_metrics_summary = embedding_metrics.get_metrics_summary()
+        
+        # Métricas de almacenamiento de imágenes
+        storage_metrics_summary = image_storage_metrics.get_metrics_summary()
+        
+        multimodal_metrics = {
+            "image_extraction": extraction_metrics,
+            "image_embeddings": embedding_metrics_summary,
+            "image_storage": storage_metrics_summary,
+            "multimodal_enabled": True
+        }
+        
+    except Exception as e:
+        logger.warning(f"Failed to get multimodal metrics: {e}")
+        multimodal_metrics = {
+            "error": f"Failed to get multimodal metrics: {str(e)}",
+            "multimodal_enabled": False
+        }
+    
     # Estado general
     all_healthy = all(service["status"] == "healthy" for service in services.values())
     
@@ -408,6 +471,7 @@ def get_app_status() -> Dict:
             "max_size": cache_stats["max_size"],
             "utilization_percent": round((cache_stats["current_size"] / cache_stats["max_size"]) * 100, 2) if cache_stats["max_size"] > 0 else 0.0
         },
+        "multimodal": multimodal_metrics,
         "reranker": reranker_metrics,
         "services": services,
         "timestamp": time.time()
@@ -653,6 +717,54 @@ def extract_numbers_and_lists(text: str):
     nums = [num.replace(',', '.') for num in nums_raw if num.strip()]
     return nums
 
+def load_image_as_base64(image_path: str) -> str:
+    """
+    Load an image from the filesystem and convert it to base64
+    
+    Args:
+        image_path: Path to the image file
+        
+    Returns:
+        Base64 encoded image string with data URI format
+    """
+    try:
+        # Handle both absolute paths and relative paths
+        if image_path.startswith('/var/data/rag/images/'):
+            # It's already an absolute path
+            full_path = image_path
+        elif image_path.startswith('file://'):
+            # Remove file:// prefix
+            full_path = image_path.replace('file://', '')
+        else:
+            # Assume it's relative to the images directory
+            full_path = f"/var/data/rag/images/{image_path}"
+        
+        # Check if file exists
+        if not os.path.exists(full_path):
+            logger.warning(f"Image file not found: {full_path}")
+            return None
+            
+        # Read and encode the image
+        with open(full_path, 'rb') as image_file:
+            encoded_image = base64.b64encode(image_file.read()).decode('utf-8')
+        
+        # Determine mime type based on extension
+        ext = Path(full_path).suffix.lower()
+        mime_type = {
+            '.png': 'image/png',
+            '.jpg': 'image/jpeg', 
+            '.jpeg': 'image/jpeg',
+            '.gif': 'image/gif',
+            '.bmp': 'image/bmp',
+            '.webp': 'image/webp'
+        }.get(ext, 'image/png')  # Default to PNG
+        
+        return f"data:{mime_type};base64,{encoded_image}"
+        
+    except Exception as e:
+        logger.error(f"Failed to load image {image_path}: {str(e)}")
+        return None
+
 def extract_cited_documents(response: str) -> list[int]:
     """Extrae los números de documentos que el LLM citó en su respuesta"""
     import re
@@ -701,7 +813,8 @@ def generate_citations_for_cited_docs(docs: list, cited_doc_numbers: list[int], 
         if doc_index < len(docs):
             doc = docs[doc_index]
             title = doc.metadata.get('title', 'Documento desconocido')
-            page = doc.metadata.get('page', 'N/A')
+            page = doc.metadata.get('page_number', 'N/A')
+            modality = doc.metadata.get('modality', 'text')
             
             # Extraer nombre del documento de manera más amigable
             display_title = title.replace('_', ' ').title()
@@ -711,8 +824,22 @@ def generate_citations_for_cited_docs(docs: list, cited_doc_numbers: list[int], 
             # Obtener el número secuencial de la cita
             sequential_num = citation_mapping[original_doc_num]
             
-            # Formato de cita
-            citation = f"[{sequential_num}] {display_title} (pág. {page})"
+            # Formato de cita diferenciado según modalidad
+            if modality == 'image':
+                # Para imágenes, incluir metadatos específicos
+                image_index = doc.metadata.get('image_index', 0)
+                thumbnail_uri = doc.metadata.get('thumbnail_uri', '')
+                source_uri = doc.metadata.get('source_uri', '')
+                width = doc.metadata.get('width', 0)
+                height = doc.metadata.get('height', 0)
+                
+                citation = f"[{sequential_num}] Imagen {image_index + 1} en {display_title} (pág. {page}) - {width}x{height}px"
+                if thumbnail_uri:
+                    citation += f" - thumbnail: {thumbnail_uri}"
+            else:
+                # Para texto, mantener formato existente
+                citation = f"[{sequential_num}] {display_title} (pág. {page})"
+            
             citations.append(citation)
     
     # Formato final de citas
@@ -868,14 +995,48 @@ def answer_with_rag(query: str, history: List[Tuple[str, str]]):
         rerank_info = f", rerank_latency: {rerank_latency_ms:.2f}ms" if rerank_latency_ms > 0 else ""
         logger.info(f"Retrieved {len(docs)} documents for RAG query - Cache {'hit' if was_cache_hit else 'miss'} (hit rate: {cache_stats_after['hit_rate'] * 100:.1f}%){rerank_info}")
         
-        # Construir contexto optimizado
+        # Construir contexto optimizado y recopilar imágenes
         context_parts = []
+        image_documents = []  # Para rastrear documentos con imágenes
+        
         for i, d in enumerate(docs):
             doc_title = d.metadata.get('title', 'Documento desconocido')
-            page_num = d.metadata.get('page', 'N/A')
+            page_num = d.metadata.get('page_number', 'N/A')
+            modality = d.metadata.get('modality', 'text')
             
-            # Formato más claro para el contexto
-            context_part = f"""DOCUMENTO {i+1}: {doc_title}
+            # Formato diferenciado según modalidad
+            if modality == 'image':
+                # Para imágenes, incluir metadatos completos
+                thumbnail_uri = d.metadata.get('thumbnail_uri', '')
+                image_index = d.metadata.get('image_index', 0)
+                width = d.metadata.get('width', 0)
+                height = d.metadata.get('height', 0)
+                bbox = d.metadata.get('bbox', {})
+                source_uri = d.metadata.get('source_uri', '')
+                
+                # Guardar información de imagen para procesamiento multimodal
+                # NOTA: thumbnail_uri contiene la ruta del PNG original (no thumbnail)
+                # source_uri solo contiene el nombre del PDF
+                image_documents.append({
+                    'doc_index': i + 1,
+                    'thumbnail_uri': thumbnail_uri,  # Este es realmente el PNG original
+                    'source_uri': source_uri,
+                    'title': doc_title,
+                    'page': page_num,
+                    'image_index': image_index
+                })
+                
+                context_part = f"""DOCUMENTO {i+1}: {doc_title}
+PÁGINA: {page_num}
+TIPO: IMAGEN {image_index + 1}
+DIMENSIONES: {width}x{height}px
+UBICACIÓN: {thumbnail_uri}
+FUENTE: {source_uri}
+CONTENIDO: {d.page_content.strip()}
+---"""
+            else:
+                # Para texto, mantener formato existente
+                context_part = f"""DOCUMENTO {i+1}: {doc_title}
 PÁGINA: {page_num}
 CONTENIDO:
 {d.page_content.strip()}
@@ -896,10 +1057,84 @@ INSTRUCCIONES IMPORTANTES:
 5. SIEMPRE cita las fuentes específicas donde encontraste la información usando el formato DOCUMENTO X
 6. Solo responde "No hay información suficiente" si realmente NO HAY nada relacionado con la pregunta
 
+REFERENCIAS A IMÁGENES:
+7. Cuando encuentres documentos marcados como "TIPO: IMAGEN", puedes referenciarlos igual que el texto usando DOCUMENTO X
+8. Las imágenes pueden contener diagramas, gráficos, fotografías o ilustraciones relevantes para la consulta
+9. Describe brevemente el contenido visual basándote en los metadatos proporcionados (dimensiones, ubicación)
+10. Menciona imágenes cuando sean relevantes para complementar o ilustrar tu respuesta
+
 IMPORTANTE: Tu objetivo es ser útil y proporcionar información valiosa basada en el contexto disponible."""
 
         hist_text = fmt_hist(history[-SLIDING_WINDOW_TURNS:], enhanced=True)
-        prompt = f"""{sys}
+        
+        # Preparar contenido multimodal si hay imágenes
+        if image_documents:
+            logger.info(f"Preparing multimodal RAG with {len(image_documents)} images")
+            
+            # Construir contenido con imágenes
+            message_content = []
+            
+            # Agregar el prompt principal como texto
+            text_prompt = f"""{sys}
+
+Contexto:
+{context}
+
+Historial:
+{hist_text}
+
+Pregunta: {query}
+
+Por favor analiza tanto el texto como las imágenes proporcionadas. Si las imágenes contienen gráficos, tablas o diagramas relevantes para la pregunta, descríbelos y úsalos en tu respuesta.
+
+Respuesta:"""
+            
+            message_content.append({
+                "type": "text",
+                "text": text_prompt
+            })
+            
+            # Cargar y agregar imágenes (limitado a las primeras 5 más relevantes)
+            images_added = 0
+            max_images = 5  # Límite para evitar sobrecarga
+            
+            for img_doc in image_documents[:max_images]:
+                # IMPORTANTE: thumbnail_uri contiene la ruta del PNG original (no es un thumbnail)
+                # source_uri solo contiene el nombre del PDF, no la ruta de la imagen
+                # Por lo tanto, usar thumbnail_uri que tiene la ruta correcta del PNG
+                image_path = img_doc['thumbnail_uri']  # Este es el PNG original de alta resolución
+                if image_path:
+                    logger.debug(f"Loading image: {image_path}")
+                    image_base64 = load_image_as_base64(image_path)
+                    
+                    if image_base64:
+                        message_content.append({
+                            "type": "image_url",
+                            "image_url": image_base64
+                        })
+                        images_added += 1
+                        logger.info(f"Added image {images_added}: Doc {img_doc['doc_index']}, Page {img_doc['page']}")
+                    else:
+                        logger.warning(f"Failed to load image: {image_path}")
+            
+            logger.info(f"Multimodal message prepared with {images_added} images")
+            
+            # Crear mensaje multimodal para Gemini
+            human_message = HumanMessage(content=message_content)
+            
+            t0 = time.time()
+            logger.info("Invoking LLM for multimodal RAG response")
+            
+            # Debug logs
+            logger.debug(f"Context length: {len(context)} chars, docs: {len(docs)}, images: {images_added}")
+            logger.debug(f"Query: {query}")
+            
+            # Invocar con mensaje multimodal
+            resp = current_llm.invoke([human_message]).content.strip()
+            
+        else:
+            # Procesamiento tradicional solo texto
+            prompt = f"""{sys}
 
 Contexto:
 {context}
@@ -910,23 +1145,23 @@ Historial:
 Pregunta: {query}
 
 Respuesta:"""
-        
-        t0 = time.time()
-        logger.info("Invoking LLM for RAG response")
-        
-        # Debug: Log context size and first part
-        logger.debug(f"Context length: {len(context)} chars, docs: {len(docs)}")
-        
-        # Log what documents were retrieved
-        for i, doc in enumerate(docs[:5], 1):
-            page = doc.metadata.get('page', 'N/A')
-            title = doc.metadata.get('title', 'Unknown')
-            content_preview = doc.page_content[:100] if hasattr(doc, 'page_content') else 'No content'
-            logger.debug(f"Doc {i}: Page {page}, Title: {title}, Content: {content_preview}...")
-        
-        logger.debug(f"Query: {query}")
-        
-        resp = current_llm.invoke(prompt).content.strip()
+            
+            t0 = time.time()
+            logger.info("Invoking LLM for text-only RAG response")
+            
+            # Debug: Log context size and first part
+            logger.debug(f"Context length: {len(context)} chars, docs: {len(docs)}")
+            
+            # Log what documents were retrieved
+            for i, doc in enumerate(docs[:5], 1):
+                page = doc.metadata.get('page_number', 'N/A')
+                title = doc.metadata.get('title', 'Unknown')
+                content_preview = doc.page_content[:100] if hasattr(doc, 'page_content') else 'No content'
+                logger.debug(f"Doc {i}: Page {page}, Title: {title}, Content: {content_preview}...")
+            
+            logger.debug(f"Query: {query}")
+            
+            resp = current_llm.invoke(prompt).content.strip()
         latency = time.time() - t0
         rag_latency_sum += latency
         
@@ -1080,7 +1315,7 @@ def chat(user_text, state):
             context_parts = []
             for i, d in enumerate(docs):
                 doc_title = d.metadata.get('title', 'Documento desconocido')
-                page_num = d.metadata.get('page', 'N/A')
+                page_num = d.metadata.get('page_number', 'N/A')
                 context_part = f"""[{i+1}] {doc_title} (p.{page_num}):
 {d.page_content.strip()}"""
                 context_parts.append(context_part)

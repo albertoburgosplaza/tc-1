@@ -355,3 +355,255 @@ class TestServicesIntegration:
         
         # Should complete quickly when mocked
         assert total_time < 1.0  # All calls should complete in under 1 second
+
+
+class TestImageEmbeddingIntegration:
+    """Integration tests for image embedding functionality"""
+
+    @pytest.fixture
+    def mock_jina_api(self):
+        """Mock Jina API responses for image embeddings"""
+        with patch('requests.Session') as mock_session_class:
+            mock_session = Mock()
+            mock_response = Mock()
+            mock_response.status_code = 200
+            mock_response.json.return_value = {
+                "data": [
+                    {"embedding": [0.1] * 1024},
+                    {"embedding": [0.2] * 1024}
+                ]
+            }
+            mock_response.raise_for_status = Mock()
+            mock_session.post.return_value = mock_response
+            mock_session_class.return_value = mock_session
+            yield mock_session
+
+    @pytest.mark.integration
+    @patch.dict('os.environ', {'JINA_API_KEY': 'test_key'})
+    def test_image_embedding_factory_integration(self, mock_jina_api):
+        """Test complete integration of image embedding through factory"""
+        from embedding_factory import EmbeddingFactory
+        
+        # Create image embedding instance
+        embedding_instance = EmbeddingFactory.create_image_embedding()
+        
+        # Verify configuration
+        assert embedding_instance.dimensions == 1024
+        assert embedding_instance.normalized is True
+        assert embedding_instance.task_type == "retrieval.passage"
+        
+        # Test embedding generation with mock file
+        with patch('builtins.open', mock_open(read_data=b"fake_image_data")):
+            embeddings = embedding_instance.embed_images(["/test/image.jpg"])
+            assert len(embeddings) == 1
+            assert len(embeddings[0]) == 1024
+
+    @pytest.mark.integration
+    @patch.dict('os.environ', {'JINA_API_KEY': 'test_key'})
+    def test_text_image_compatibility_integration(self, mock_jina_api):
+        """Test text and image embedding compatibility in integration scenario"""
+        from embedding_factory import EmbeddingFactory
+        
+        # Verify compatibility
+        compatibility = EmbeddingFactory.verify_embedding_compatibility()
+        
+        assert compatibility["compatible"] is True
+        assert compatibility["ready_for_mixed_search"] is True
+        assert compatibility["text_dimensions"] == compatibility["image_dimensions"]
+        
+        # Test both text and image embeddings work
+        text_instance = EmbeddingFactory.create_embedding()
+        image_instance = EmbeddingFactory.create_image_embedding()
+        
+        assert text_instance.dimensions == image_instance.dimensions
+        assert text_instance.normalized == image_instance.normalized
+
+    @pytest.mark.integration
+    @patch.dict('os.environ', {'JINA_API_KEY': 'test_key'})
+    def test_flexible_image_embedding_integration(self, mock_jina_api):
+        """Test flexible image embedding with multiple input types"""
+        from embedding_factory import EmbeddingFactory
+        import base64
+        
+        # Create test image data
+        test_image_bytes = b"fake_png_data\x89PNG\r\n\x1a\n"
+        test_image_b64 = base64.b64encode(test_image_bytes).decode('utf-8')
+        
+        # Test mixed input types
+        mixed_inputs = [
+            "/path/to/image1.jpg",  # file path
+            test_image_b64,         # base64 string  
+            test_image_bytes        # bytes data
+        ]
+        
+        with patch('builtins.open', mock_open(read_data=test_image_bytes)):
+            embeddings = EmbeddingFactory.embed_images_flexible(mixed_inputs)
+            
+            assert len(embeddings) == 3
+            assert all(len(emb) == 1024 for emb in embeddings)
+
+    @pytest.mark.integration
+    @patch.dict('os.environ', {'JINA_API_KEY': 'test_key'})
+    def test_image_embedding_qdrant_integration(self, mock_jina_api):
+        """Test image embeddings integration with Qdrant vector storage"""
+        from embedding_factory import EmbeddingFactory
+        
+        with patch('qdrant_client.QdrantClient') as mock_qdrant:
+            mock_client = Mock()
+            mock_qdrant.return_value = mock_client
+            
+            # Mock successful upsert
+            mock_client.upsert.return_value = Mock(status="completed")
+            
+            # Generate image embeddings
+            with patch('builtins.open', mock_open(read_data=b"fake_image")):
+                embeddings = EmbeddingFactory.embed_images_flexible(["/test/image.jpg"])
+                
+                # Simulate storing in Qdrant
+                from qdrant_client import QdrantClient
+                from qdrant_client.models import PointStruct
+                
+                client = QdrantClient(url="http://qdrant:6333")
+                
+                points = [
+                    PointStruct(
+                        id="img_1",
+                        vector=embeddings[0],
+                        payload={
+                            "source": "/test/image.jpg",
+                            "modality": "image",
+                            "content_type": "image/jpeg"
+                        }
+                    )
+                ]
+                
+                result = client.upsert(
+                    collection_name="test_collection",
+                    points=points
+                )
+                
+                assert result.status == "completed"
+                mock_client.upsert.assert_called_once()
+
+    @pytest.mark.integration 
+    @patch.dict('os.environ', {'JINA_API_KEY': 'test_key'})
+    def test_mixed_modality_search_integration(self, mock_jina_api):
+        """Test mixed text and image search integration"""
+        from embedding_factory import EmbeddingFactory
+        
+        with patch('qdrant_client.QdrantClient') as mock_qdrant:
+            mock_client = Mock()
+            mock_qdrant.return_value = mock_client
+            
+            # Mock search results with mixed modalities
+            mock_client.search.return_value = [
+                Mock(
+                    id="text_1",
+                    payload={
+                        "content": "This is text content",
+                        "modality": "text",
+                        "source": "document.pdf"
+                    },
+                    score=0.9
+                ),
+                Mock(
+                    id="img_1", 
+                    payload={
+                        "content": "Image description",
+                        "modality": "image",
+                        "source": "image.jpg"
+                    },
+                    score=0.8
+                )
+            ]
+            
+            # Generate query embedding (could be text or image)
+            text_instance = EmbeddingFactory.create_embedding()
+            query_embedding = [0.1] * 1024  # Mock embedding
+            
+            # Search for mixed results
+            from qdrant_client import QdrantClient
+            client = QdrantClient(url="http://qdrant:6333")
+            
+            results = client.search(
+                collection_name="test_collection",
+                query_vector=query_embedding,
+                limit=10
+            )
+            
+            # Verify mixed results
+            assert len(results) == 2
+            modalities = [r.payload["modality"] for r in results]
+            assert "text" in modalities
+            assert "image" in modalities
+
+    @pytest.mark.integration
+    def test_image_embedding_error_handling_integration(self):
+        """Test error handling in image embedding integration scenarios"""
+        from embedding_factory import EmbeddingFactory
+        
+        # Test missing API key
+        with patch.dict('os.environ', {}, clear=True):
+            with pytest.raises(ValueError, match="JINA_API_KEY es requerida"):
+                EmbeddingFactory.create_image_embedding()
+        
+        # Test invalid provider
+        with patch.dict('os.environ', {'JINA_API_KEY': 'test_key'}):
+            with pytest.raises(ValueError, match="Unsupported provider for images"):
+                EmbeddingFactory.create_image_embedding(provider="unsupported")
+
+    @pytest.mark.integration
+    @patch.dict('os.environ', {'JINA_API_KEY': 'test_key'})
+    def test_image_embedding_performance_integration(self, mock_jina_api):
+        """Test performance characteristics of image embedding integration"""
+        from embedding_factory import EmbeddingFactory
+        import time
+        
+        # Test batch processing performance
+        image_paths = [f"/test/image_{i}.jpg" for i in range(10)]
+        
+        with patch('builtins.open', mock_open(read_data=b"fake_image_data")):
+            start_time = time.time()
+            embeddings = EmbeddingFactory.embed_images_flexible(image_paths)
+            end_time = time.time()
+            
+            # Should process reasonably quickly (mocked)
+            assert end_time - start_time < 1.0
+            assert len(embeddings) == 10
+            assert all(len(emb) == 1024 for emb in embeddings)
+
+    @pytest.mark.integration
+    @patch.dict('os.environ', {'JINA_API_KEY': 'test_key'})
+    def test_image_embedding_concurrent_integration(self, mock_jina_api):
+        """Test concurrent image embedding processing integration"""
+        from embedding_factory import EmbeddingFactory
+        import threading
+        import time
+        
+        results = []
+        errors = []
+        
+        def process_images(image_list):
+            try:
+                with patch('builtins.open', mock_open(read_data=b"fake_image")):
+                    embeddings = EmbeddingFactory.embed_images_flexible(image_list)
+                    results.append(len(embeddings))
+            except Exception as e:
+                errors.append(str(e))
+        
+        # Create concurrent processing threads
+        threads = []
+        for i in range(3):
+            image_list = [f"/test/batch_{i}_image_{j}.jpg" for j in range(2)]
+            thread = threading.Thread(target=process_images, args=(image_list,))
+            threads.append(thread)
+            thread.start()
+        
+        # Wait for completion
+        for thread in threads:
+            thread.join()
+        
+        # Verify all batches processed successfully
+        assert len(errors) == 0
+        assert len(results) == 3
+        assert all(count == 2 for count in results)  # 2 images per batch

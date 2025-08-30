@@ -80,35 +80,35 @@ class TestRunner:
     
     def run_unit_tests(self) -> bool:
         """Run unit tests"""
-        command = ['python', '-m', 'pytest', 'tests/unit/', '-v', '--tb=short']
+        command = ['python3', '-m', 'pytest', 'tests/unit/', '-v', '--tb=short']
         result = self.run_command(command, "Unit Tests")
         self.results['unit_tests'] = result
         return result['success']
     
     def run_integration_tests(self) -> bool:
         """Run integration tests"""
-        command = ['python', '-m', 'pytest', 'tests/integration/', '-v', '--tb=short', '-m', 'integration']
+        command = ['python3', '-m', 'pytest', 'tests/integration/', '-v', '--tb=short', '-m', 'integration']
         result = self.run_command(command, "Integration Tests")
         self.results['integration_tests'] = result
         return result['success']
     
     def run_e2e_tests(self) -> bool:
         """Run end-to-end tests"""
-        command = ['python', '-m', 'pytest', 'tests/e2e/', '-v', '--tb=short', '-m', 'e2e']
+        command = ['python3', '-m', 'pytest', 'tests/e2e/', '-v', '--tb=short', '-m', 'e2e']
         result = self.run_command(command, "End-to-End Tests", timeout=600)
         self.results['e2e_tests'] = result
         return result['success']
     
     def run_evaluation_tests(self) -> bool:
         """Run RAG quality evaluation tests"""
-        command = ['python', '-m', 'pytest', 'tests/evaluation/', '-v', '--tb=short', '-m', 'evaluation']
+        command = ['python3', '-m', 'pytest', 'tests/evaluation/', '-v', '--tb=short', '-m', 'evaluation']
         result = self.run_command(command, "RAG Quality Evaluation", timeout=300)
         self.results['evaluation_tests'] = result
         return result['success']
     
     def run_acceptance_criteria(self) -> bool:
         """Run acceptance criteria validation"""
-        command = ['python', 'validate_acceptance_criteria.py']
+        command = ['python3', 'validate_acceptance_criteria.py']
         result = self.run_command(command, "Acceptance Criteria Validation")
         self.results['acceptance_criteria'] = result
         return result['success']
@@ -124,12 +124,12 @@ class TestRunner:
         """Run code linting (if available)"""
         # Check if pytest is available first
         try:
-            subprocess.run(['python', '-c', 'import pytest'], 
+            subprocess.run(['python3', '-c', 'import pytest'], 
                          check=True, capture_output=True)
         except subprocess.CalledProcessError:
             print("⚠️ Pytest not available, skipping linting")
             self.results['linting'] = {
-                'command': 'python -c "import pytest"',
+                'command': 'python3 -c "import pytest"',
                 'success': False,
                 'returncode': 1,
                 'stdout': '',
@@ -140,7 +140,7 @@ class TestRunner:
             return False
         
         # Run basic structure validation
-        command = ['python', '-m', 'py_compile'] + [
+        command = ['python3', '-m', 'py_compile'] + [
             'app.py', 'ingest.py', 'pyexec_service.py', 
             'validate_acceptance_criteria.py'
         ]
@@ -154,7 +154,7 @@ class TestRunner:
             print("⚠️ Tests directory not found")
             return False
         
-        command = ['python', '-m', 'pytest', '--cov=.', '--cov-report=html', 
+        command = ['python3', '-m', 'pytest', '--cov=.', '--cov-report=html', 
                   '--cov-report=term', 'tests/', '--tb=no', '-q']
         result = self.run_command(command, "Coverage Report Generation", timeout=180)
         self.results['coverage'] = result

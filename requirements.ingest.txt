@@ -6,5 +6,7 @@ langchain-google-genai
 qdrant-client
 pypdf
 pymupdf
+pillow
 requests
 urllib3
+numpy

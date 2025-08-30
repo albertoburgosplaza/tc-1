@@ -289,6 +289,63 @@ class JinaEmbeddings:
         
         return self._make_request(inputs, task)
     
+    def embed_images(self, image_paths: List[str]) -> List[List[float]]:
+        """
+        Generar embeddings para imágenes usando Jina Embeddings v4
+        
+        Args:
+            image_paths: Lista de rutas a archivos de imagen
+            
+        Returns:
+            Lista de embeddings (vectores de dimensión self.dimensions)
+        """
+        import base64
+        
+        if not image_paths:
+            return []
+        
+        inputs = []
+        for image_path in image_paths:
+            try:
+                with open(image_path, "rb") as image_file:
+                    # Codificar imagen en base64
+                    image_data = base64.b64encode(image_file.read()).decode('utf-8')
+                    inputs.append({"image": image_data})
+            except Exception as e:
+                logger.error(f"Error reading image {image_path}: {e}")
+                raise ValueError(f"No se pudo leer la imagen: {image_path}")
+        
+        # Usar el mismo task que para documentos (retrieval.passage)
+        return self._make_request(inputs, "retrieval.passage", late_chunking=False)
+    
+    def embed_images_data(self, image_data_list: List[bytes]) -> List[List[float]]:
+        """
+        Generar embeddings para datos de imágenes en memoria
+        
+        Args:
+            image_data_list: Lista de datos de imagen en bytes
+            
+        Returns:
+            Lista de embeddings (vectores de dimensión self.dimensions)
+        """
+        import base64
+        
+        if not image_data_list:
+            return []
+        
+        inputs = []
+        for image_data in image_data_list:
+            try:
+                # Codificar imagen en base64
+                image_b64 = base64.b64encode(image_data).decode('utf-8')
+                inputs.append({"image": image_b64})
+            except Exception as e:
+                logger.error(f"Error encoding image data: {e}")
+                raise ValueError(f"No se pudieron codificar los datos de imagen")
+        
+        # Usar el mismo task que para documentos (retrieval.passage)
+        return self._make_request(inputs, "retrieval.passage", late_chunking=False)
+    
     def get_model_info(self) -> Dict[str, Any]:
         """Obtener información del modelo configurado"""
         return {

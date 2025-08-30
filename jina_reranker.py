@@ -36,6 +36,7 @@ class JinaReranker:
         api_key: Optional[str] = None,
         model: str = "jina-reranker-m0",
         timeout: int = 20,
+        multimodal_timeout: Optional[int] = None,
         max_retries: int = 3,
         backoff_base: float = 1.0,
         max_chunk_size: int = 2048,
@@ -47,7 +48,8 @@ class JinaReranker:
         Args:
             api_key: Jina API key (si no se proporciona, lee de JINA_API_KEY)
             model: Modelo a usar (default: jina-reranker-m0)
-            timeout: Timeout en segundos para requests HTTP
+            timeout: Timeout en segundos para requests HTTP estándar
+            multimodal_timeout: Timeout específico para requests multimodales (si es None, usa timeout * 2)
             max_retries: Número máximo de reintentos
             backoff_base: Base para backoff exponencial
             max_chunk_size: Máximo número de documentos por chunk (API limit: 2048)
@@ -61,6 +63,11 @@ class JinaReranker:
         
         self.model = model
         self.timeout = timeout
+        # Configurar timeout multimodal desde variable de entorno o parámetro
+        self.multimodal_timeout = (
+            multimodal_timeout or 
+            int(os.getenv("MULTIMODAL_REQUEST_TIMEOUT", timeout * 2))
+        )
         self.max_retries = max_retries
         self.backoff_base = backoff_base
         self.max_chunk_size = max_chunk_size
@@ -83,7 +90,7 @@ class JinaReranker:
         self.reset_metrics()
         
         logger.info(f"Initialized Jina Reranker m0: model={model}, timeout={timeout}s, "
-                   f"max_chunk_size={max_chunk_size}")
+                   f"multimodal_timeout={self.multimodal_timeout}s, max_chunk_size={max_chunk_size}")
     
     def reset_metrics(self):
         """Reset métricas de rendimiento"""
@@ -95,7 +102,11 @@ class JinaReranker:
             "fallback_count": 0,
             "multimodal_queries": 0,
             "multimodal_docs": 0,
-            "chunks_processed": 0
+            "chunks_processed": 0,
+            "text_only_docs": 0,
+            "image_only_docs": 0,
+            "mixed_docs": 0,
+            "modality_detection_calls": 0
         }
     
     def get_metrics(self) -> Dict[str, Any]:
@@ -178,61 +189,373 @@ class JinaReranker:
         
         return query
     
+    def _detect_modality(self, doc_data: Dict[str, Any]) -> str:
+        """
+        Detectar la modalidad de un documento basándose en su contenido y metadata
+        
+        Args:
+            doc_data: Datos del documento (dict o metadata)
+            
+        Returns:
+            "text", "image", o "mixed"
+        """
+        self.metrics["modality_detection_calls"] += 1
+        
+        has_text = False
+        has_image = False
+        
+        # Verificar si tiene contenido de texto
+        text_content = (
+            doc_data.get("content") or 
+            doc_data.get("page_content") or 
+            doc_data.get("text")
+        )
+        if text_content and isinstance(text_content, str) and text_content.strip():
+            has_text = True
+        
+        # Verificar modalidad explícita en metadata
+        if "metadata" in doc_data and isinstance(doc_data["metadata"], dict):
+            metadata = doc_data["metadata"]
+            explicit_modality = metadata.get("modality")
+            if explicit_modality == "image":
+                has_image = True
+            elif explicit_modality == "text":
+                has_text = True
+            
+            # Buscar campos de imagen en metadata del esquema multimodal
+            image_fields = [
+                "image", "image_url", "thumbnail", "thumbnail_uri", 
+                "source_uri"  # Para imágenes almacenadas localmente
+            ]
+            for field in image_fields:
+                if metadata.get(field):
+                    image_value = metadata.get(field)
+                    if self._is_image_reference(image_value):
+                        has_image = True
+                        break
+        
+        # Buscar campos de imagen directamente en el documento
+        image_fields = ["image", "image_url", "thumbnail_uri"]
+        for field in image_fields:
+            if doc_data.get(field):
+                image_value = doc_data.get(field)
+                if self._is_image_reference(image_value):
+                    has_image = True
+                    break
+        
+        # Determinar modalidad final y actualizar métricas
+        if has_image and has_text:
+            self.metrics["mixed_docs"] += 1
+            return "mixed"
+        elif has_image:
+            self.metrics["image_only_docs"] += 1
+            return "image" 
+        else:
+            self.metrics["text_only_docs"] += 1
+            return "text"
+    
+    def _is_image_reference(self, value: str) -> bool:
+        """
+        Verificar si un valor es una referencia a imagen (URL, URI local, o base64)
+        
+        Args:
+            value: Valor a verificar
+            
+        Returns:
+            bool: True si es referencia a imagen
+        """
+        if not isinstance(value, str) or not value.strip():
+            return False
+        
+        value = value.strip()
+        
+        # Data URI de imagen
+        if value.startswith('data:image/'):
+            return True
+        
+        # URI local de imagen (típico del esquema multimodal)
+        if value.startswith('file://') or value.startswith('/var/data/rag/images/'):
+            return True
+        
+        # URL HTTP/HTTPS de imagen
+        if self._is_url(value) and self._looks_like_image_url(value):
+            return True
+        
+        # Base64 sin prefijo data:
+        if self._looks_like_base64_image(value):
+            return True
+        
+        return False
+    
+    def _process_image_for_api(self, image_ref: str) -> str:
+        """
+        Procesar referencia de imagen para el API de Jina Reranker m0
+        
+        Args:
+            image_ref: Referencia a imagen (URI, URL, base64)
+            
+        Returns:
+            str: Imagen formateada para el API
+        """
+        if not image_ref:
+            return image_ref
+            
+        # Si ya es data URI, usar directamente
+        if image_ref.startswith('data:image/'):
+            return image_ref
+        
+        # Si es URI local (file://) - convertir a file:// si no lo tiene
+        if image_ref.startswith('/var/data/rag/images/') or image_ref.startswith('/'):
+            if not image_ref.startswith('file://'):
+                return f"file://{image_ref}"
+            return image_ref
+        
+        # Si es base64 puro, añadir prefijo data:image
+        if self._looks_like_base64_image(image_ref) and not image_ref.startswith('data:'):
+            # Asumir JPEG por defecto si no se puede determinar
+            return f"data:image/jpeg;base64,{image_ref}"
+        
+        # Para URLs HTTP/HTTPS, usar directamente
+        return image_ref
+    
+    def _is_multimodal_request(self, query: Union[str, Dict], documents: List[Dict]) -> bool:
+        """
+        Determinar si una request es multimodal (contiene imágenes)
+        
+        Args:
+            query: Query de la request
+            documents: Documentos de la request
+            
+        Returns:
+            bool: True si la request es multimodal
+        """
+        # Verificar query
+        if isinstance(query, dict) and "image" in query:
+            return True
+        
+        # Verificar documentos
+        for doc in documents:
+            if isinstance(doc, dict) and "image" in doc:
+                return True
+                
+        return False
+    
+    def _extract_original_metadata(self, doc: Union[str, Dict, Any]) -> Dict[str, Any]:
+        """
+        Extraer metadata original completa de un documento
+        
+        Args:
+            doc: Documento original
+            
+        Returns:
+            Dict con metadata preservada
+        """
+        if isinstance(doc, str):
+            return {}
+        
+        if isinstance(doc, dict):
+            # Para diccionarios, preservar toda la metadata
+            metadata = doc.get("metadata", {})
+            if isinstance(metadata, dict):
+                # Crear copia para evitar modificar original
+                preserved = metadata.copy()
+                
+                # Añadir campos de imagen directos si existen
+                for field in ["image", "image_url", "thumbnail_uri"]:
+                    if field in doc and field not in preserved:
+                        preserved[field] = doc[field]
+                
+                return preserved
+            return {}
+        
+        # Para objetos con atributos (ej: LangChain Document)
+        if hasattr(doc, 'metadata') and isinstance(doc.metadata, dict):
+            return doc.metadata.copy()
+        
+        return {}
+    
+    def _handle_multimodal_fallback(
+        self,
+        query: Union[str, Dict], 
+        documents: List[Union[str, Dict, Any]], 
+        top_n: int,
+        normalized_docs: List[Dict],
+        latency_ms: float,
+        error: Exception
+    ) -> Tuple[List[Dict], float]:
+        """
+        Manejar fallback cuando reranking multimodal falla
+        
+        Args:
+            query: Query original
+            documents: Documentos originales
+            top_n: Número de documentos requeridos
+            normalized_docs: Documentos normalizados
+            latency_ms: Latencia hasta el momento del error
+            error: Error que causó el fallback
+            
+        Returns:
+            Tuple de (resultados_fallback, latencia_ms)
+        """
+        self.metrics["fallback_count"] += 1
+        
+        # Detectar si hay contenido multimodal
+        has_multimodal = any(
+            isinstance(doc, dict) and "image" in doc 
+            for doc in normalized_docs
+        ) or (isinstance(query, dict) and "image" in query)
+        
+        if has_multimodal:
+            logger.warning(f"Multimodal reranking failed ({str(error)}), attempting text-only fallback")
+            
+            # Intentar fallback solo con texto
+            try:
+                # Filtrar solo contenido de texto
+                text_only_docs = []
+                for doc in normalized_docs:
+                    if isinstance(doc, dict) and "text" in doc:
+                        text_only_docs.append({"text": doc["text"]})
+                    elif isinstance(doc, str):
+                        text_only_docs.append({"text": doc})
+                
+                # Query solo texto
+                text_only_query = query
+                if isinstance(query, dict) and "text" in query:
+                    text_only_query = query["text"]
+                elif isinstance(query, dict) and "image" in query:
+                    # Si solo hay query de imagen, usar búsqueda básica
+                    logger.warning("Image-only query in fallback, using basic similarity")
+                    return self._basic_similarity_fallback(documents, top_n, latency_ms)
+                
+                if text_only_docs:
+                    logger.info(f"Attempting text-only reranking with {len(text_only_docs)} documents")
+                    results = self._make_request_with_retry(text_only_query, text_only_docs, top_n)
+                    
+                    logger.info(f"Text-only fallback successful: {len(results)} results")
+                    return results, latency_ms
+                    
+            except Exception as fallback_error:
+                logger.error(f"Text-only fallback also failed: {str(fallback_error)}")
+        
+        # Fallback final: orden original
+        logger.warning(f"All reranking failed, returning documents in original order")
+        return self._basic_similarity_fallback(documents, top_n, latency_ms)
+    
+    def _basic_similarity_fallback(
+        self,
+        documents: List[Union[str, Dict, Any]], 
+        top_n: int, 
+        latency_ms: float
+    ) -> Tuple[List[Dict], float]:
+        """
+        Fallback básico que devuelve documentos en orden original con scores simulados
+        
+        Args:
+            documents: Documentos originales
+            top_n: Número de documentos requeridos
+            latency_ms: Latencia acumulada
+            
+        Returns:
+            Tuple de (resultados_básicos, latencia_ms)
+        """
+        results = []
+        for i in range(min(top_n, len(documents))):
+            # Score descendente simulado basado en posición original
+            score = 1.0 - (i * 0.01)  # 1.0, 0.99, 0.98, etc.
+            results.append({
+                "index": i,
+                "relevance_score": score,
+                "score": score,
+                "fallback": True
+            })
+        
+        logger.info(f"Basic fallback returned {len(results)} documents with simulated scores")
+        return results, latency_ms
+
     def _normalize_document(self, doc: Union[str, Dict, Any]) -> Dict[str, str]:
         """
-        Normalizar documento para formato multimodal
+        Normalizar documento para formato multimodal con detección mejorada
         
         Returns:
             Dict con {"text": "..."} y opcionalmente {"image": "..."}
         """
         if isinstance(doc, str):
+            # Si es string puro, verificar si es imagen
+            if self._is_image_reference(doc):
+                self.metrics["multimodal_docs"] += 1
+                return {"image": self._process_image_for_api(doc)}
             return {"text": doc}
         
         if isinstance(doc, dict):
-            # Si ya tiene formato correcto
+            # Si ya tiene formato correcto de Jina
             if "text" in doc or "image" in doc:
-                # Contar documentos multimodales
                 if "image" in doc:
                     self.metrics["multimodal_docs"] += 1
                 return doc
             
-            # Extraer texto de campos comunes
-            text = doc.get("content") or doc.get("page_content") or str(doc)
-            result = {"text": text}
+            # Detectar modalidad del documento
+            modality = self._detect_modality(doc)
             
-            # Buscar imagen en metadata
-            image_url = None
+            result = {}
+            
+            # Extraer contenido de texto
+            text_content = (doc.get("content") or 
+                          doc.get("page_content") or 
+                          doc.get("text"))
+            if text_content and isinstance(text_content, str) and text_content.strip():
+                result["text"] = text_content
+            
+            # Extraer referencia de imagen
+            image_ref = None
+            
+            # Buscar en metadata primero (esquema multimodal)
             if "metadata" in doc and isinstance(doc["metadata"], dict):
                 metadata = doc["metadata"]
-                image_url = (metadata.get("image") or 
-                           metadata.get("image_url") or 
-                           metadata.get("thumbnail"))
+                # Prioridad: thumbnail_uri > image_url > source_uri > image
+                for field in ["thumbnail_uri", "image_url", "source_uri", "image"]:
+                    candidate = metadata.get(field)
+                    if candidate and self._is_image_reference(candidate):
+                        image_ref = candidate
+                        break
             
-            # También buscar imagen directamente en el doc
-            if not image_url:
-                image_url = doc.get("image") or doc.get("image_url")
+            # Buscar directamente en el documento si no se encontró en metadata
+            if not image_ref:
+                for field in ["image", "image_url", "thumbnail_uri"]:
+                    candidate = doc.get(field)
+                    if candidate and self._is_image_reference(candidate):
+                        image_ref = candidate
+                        break
             
-            if image_url:
-                result["image"] = image_url
+            # Añadir imagen si se encontró, procesándola para el API
+            if image_ref:
+                result["image"] = self._process_image_for_api(image_ref)
                 self.metrics["multimodal_docs"] += 1
+            
+            # Si no hay contenido, usar fallback
+            if not result:
+                result["text"] = str(doc)
             
             return result
         
         # Para objetos con atributos (ej: LangChain Document)
         if hasattr(doc, 'page_content'):
-            text = doc.page_content
-            result = {"text": text}
+            result = {}
+            
+            # Texto del documento
+            if doc.page_content and doc.page_content.strip():
+                result["text"] = doc.page_content
             
             # Buscar imagen en metadata
             if hasattr(doc, 'metadata') and isinstance(doc.metadata, dict):
-                image_url = (doc.metadata.get("image") or 
-                           doc.metadata.get("image_url") or 
-                           doc.metadata.get("thumbnail"))
-                if image_url:
-                    result["image"] = image_url
-                    self.metrics["multimodal_docs"] += 1
+                # Usar mismo orden de prioridad
+                for field in ["thumbnail_uri", "image_url", "source_uri", "image"]:
+                    candidate = doc.metadata.get(field)
+                    if candidate and self._is_image_reference(candidate):
+                        result["image"] = self._process_image_for_api(candidate)
+                        self.metrics["multimodal_docs"] += 1
+                        break
             
-            return result
+            return result if result else {"text": str(doc)}
         
         # Fallback: convertir a string
         return {"text": str(doc)}
@@ -253,6 +576,13 @@ class JinaReranker:
             "return_documents": False  # Solo necesitamos índices y scores
         }
         
+        # Determinar timeout apropiado basado en si es multimodal
+        is_multimodal = self._is_multimodal_request(query, documents)
+        request_timeout = self.multimodal_timeout if is_multimodal else self.timeout
+        
+        if is_multimodal:
+            logger.debug(f"Using multimodal timeout: {request_timeout}s for request with images")
+        
         last_exception = None
         
         for attempt in range(self.max_retries + 1):
@@ -264,7 +594,7 @@ class JinaReranker:
                     self.api_url,
                     headers=self.headers,
                     json=payload,
-                    timeout=self.timeout
+                    timeout=request_timeout
                 )
                 
                 # Manejar rate limiting específico de Jina
@@ -414,12 +744,18 @@ class JinaReranker:
             if return_documents:
                 for result in results:
                     doc_idx = result["index"]
-                    if doc_idx < len(normalized_docs):
-                        doc = normalized_docs[doc_idx]
-                        if "text" in doc:
-                            result["text"] = doc["text"]
-                        if "image" in doc:
-                            result["image"] = doc["image"]
+                    if doc_idx < len(normalized_docs) and doc_idx < len(documents):
+                        normalized_doc = normalized_docs[doc_idx]
+                        original_doc = documents[doc_idx]
+                        
+                        # Añadir contenido normalizado
+                        if "text" in normalized_doc:
+                            result["text"] = normalized_doc["text"]
+                        if "image" in normalized_doc:
+                            result["image"] = normalized_doc["image"]
+                        
+                        # Preservar metadata original completa
+                        result["original_metadata"] = self._extract_original_metadata(original_doc)
             
             latency_ms = (time.time() - start_time) * 1000
             self.metrics["total_latency_ms"] += latency_ms
@@ -437,8 +773,12 @@ class JinaReranker:
         except Exception as e:
             latency_ms = (time.time() - start_time) * 1000
             self.metrics["total_latency_ms"] += latency_ms
-            logger.error(f"Reranking failed: {str(e)}")
-            raise
+            self.metrics["error_count"] += 1
+            
+            # Intentar fallback para errores multimodales específicos
+            return self._handle_multimodal_fallback(
+                query, documents, top_n, normalized_docs, latency_ms, e
+            )
     
     def rerank_doc_objects(
         self, 

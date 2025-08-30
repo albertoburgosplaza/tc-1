@@ -128,13 +128,23 @@ services:
       LLM_PROVIDER: google
       GOOGLE_API_KEY: "${GOOGLE_API_KEY}"
       QDRANT_URL: http://qdrant:6333
-      COLLECTION_NAME: corpus_pdf
-      EMBEDDING_MODEL: jina-embeddings-v4
+      COLLECTION_NAME: ${QDRANT_COLLECTION:-rag_multimodal}
+      EMBEDDING_MODEL: ${JINA_EMBEDDINGS_MODEL:-jina-embeddings-v4}
       EMBEDDING_PROVIDER: jina
       JINA_API_KEY: ${JINA_API_KEY}
       GRADIO_SERVER_NAME: 0.0.0.0
       GRADIO_SERVER_PORT: "7860"
       PYEXEC_URL: http://pyexec:8001
+      # Multimodal Configuration
+      ENABLE_IMAGE_INGEST: ${ENABLE_IMAGE_INGEST:-true}
+      STORAGE_BASE_PATH: ${STORAGE_BASE_PATH:-/var/data/rag/images}
+      THUMBNAIL_SUBDIR: ${THUMBNAIL_SUBDIR:-thumbnails}
+      IMAGE_MAX_SIDE_PX: ${IMAGE_MAX_SIDE_PX:-1024}
+      IMAGE_MAX_BYTES: ${IMAGE_MAX_BYTES:-5242880}
+      TOP_K_SEARCH: ${TOP_K_SEARCH:-50}
+      TOP_N_RERANK: ${TOP_N_RERANK:-10}
+      JINA_RERANK_MODEL: ${JINA_RERANK_MODEL:-jina-rerank-m0}
+      REQUEST_TIMEOUT_MS: ${REQUEST_TIMEOUT_MS:-15000}
       # Configuración del reranker multimodal
       JINA_RERANKER_ENABLED: "true"
       RETRIEVAL_TOP_K: "30"
@@ -154,6 +164,7 @@ services:
       - "8080:8080"
     volumes:
       - ./docs:/app/docs:ro
+      - rag_images:/var/data/rag/images
     networks:
       - rag_internal
     security_opt:
@@ -189,12 +200,20 @@ services:
           cpus: "1.0"
     environment:
       QDRANT_URL: http://qdrant:6333
-      COLLECTION_NAME: corpus_pdf
-      EMBEDDING_MODEL: jina-embeddings-v4
+      COLLECTION_NAME: ${QDRANT_COLLECTION:-rag_multimodal}
+      EMBEDDING_MODEL: ${JINA_EMBEDDINGS_MODEL:-jina-embeddings-v4}
       EMBEDDING_PROVIDER: jina
       DOCUMENTS_DIR: /app/docs
       GOOGLE_API_KEY: ${GOOGLE_API_KEY}
       JINA_API_KEY: ${JINA_API_KEY}
+      # Multimodal Configuration
+      ENABLE_IMAGE_INGEST: ${ENABLE_IMAGE_INGEST:-true}
+      STORAGE_BASE_PATH: ${STORAGE_BASE_PATH:-/var/data/rag/images}
+      THUMBNAIL_SUBDIR: ${THUMBNAIL_SUBDIR:-thumbnails}
+      IMAGE_MAX_SIDE_PX: ${IMAGE_MAX_SIDE_PX:-1024}
+      IMAGE_MAX_BYTES: ${IMAGE_MAX_BYTES:-5242880}
+      JINA_RERANK_MODEL: ${JINA_RERANK_MODEL:-jina-rerank-m0}
+      REQUEST_TIMEOUT_MS: ${REQUEST_TIMEOUT_MS:-15000}
       # Configuración de procesamiento
       MAX_PDF_SIZE_MB: "100"
       CHUNK_SIZE: "1200"
@@ -205,6 +224,7 @@ services:
       BATCH_SIZE: "50"
     volumes:
       - ./docs:/app/docs:ro
+      - rag_images:/var/data/rag/images
     networks:
       - rag_internal
     security_opt:
@@ -216,3 +236,4 @@ services:
 
 volumes:
   qdrant_data:
+  rag_images:
