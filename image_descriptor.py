@@ -203,7 +203,7 @@ class ImageDescriptor:
     """
     
     # Constantes de configuración
-    DEFAULT_MODEL = "gemini-2.5-flash"
+    DEFAULT_MODEL = "gemini-2.5-flash-lite"
     CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1200"))
     DEFAULT_TIMEOUT = 30  # segundos
     API_TIMEOUT = int(os.getenv("GEMINI_API_TIMEOUT", str(DEFAULT_TIMEOUT)))

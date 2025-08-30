@@ -14,7 +14,7 @@ from qdrant_client.models import Distance, VectorParams
 from qdrant_client.http import models
 from embedding_factory import EmbeddingFactory
 from image_extractor import ImageExtractor
-from image_descriptor import ImageDescriptor, ImageContentType
+# from image_descriptor import ImageDescriptor, ImageContentType  # Moved to conditional import
 
 # Configurar logging estructurado
 logging.basicConfig(
@@ -107,11 +107,16 @@ if ENABLE_IMAGE_INGEST:
         
         # Inicializar descriptor de imágenes para generar descripciones automáticas
         try:
+            logger.info("Attempting to import ImageDescriptor...")
+            from image_descriptor import ImageDescriptor
+            logger.info("Import successful, creating ImageDescriptor instance...")
             image_descriptor = ImageDescriptor()
             logger.info("Image description generation enabled with ImageDescriptor")
         except Exception as e:
             logger.warning(f"Failed to initialize image descriptor: {e}")
             logger.warning("Continuing with image extraction only (no descriptions)")
+            import traceback
+            logger.debug(f"Full traceback: {traceback.format_exc()}")
             
     except Exception as e:
         logger.warning(f"Failed to initialize image extractor: {e}")
