@@ -14,6 +14,7 @@ from qdrant_client.models import Distance, VectorParams
 from qdrant_client.http import models
 from embedding_factory import EmbeddingFactory
 from image_extractor import ImageExtractor
+from image_descriptor import ImageDescriptor, ImageContentType
 
 # Configurar logging estructurado
 logging.basicConfig(
@@ -27,8 +28,8 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 COLLECTION = os.getenv("COLLECTION_NAME", os.getenv("QDRANT_COLLECTION", "rag_multimodal"))
 DOCS_DIR = os.getenv("DOCUMENTS_DIR", "docs")
 # Configuración de embeddings (alineada con app.py)
-EMB_MODEL = os.getenv("EMBEDDING_MODEL", "models/embedding-001")
-EMB_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "google")
+EMB_MODEL = os.getenv("EMBEDDING_MODEL", "jina-embeddings-v4")
+EMB_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "jina")
 
 # Configuración de procesamiento
 MAX_PDF_SIZE_MB = int(os.getenv("MAX_PDF_SIZE_MB", "100"))
@@ -98,10 +99,20 @@ pdf_paths = valid_pdfs
 
 # Inicializar extractor de imágenes si está habilitado
 image_extractor = None
+image_descriptor = None
 if ENABLE_IMAGE_INGEST:
     try:
         image_extractor = ImageExtractor(base_images_dir=STORAGE_BASE_PATH, max_pdf_size_mb=MAX_PDF_SIZE_MB)
         logger.info(f"Image extraction enabled - storage path: {STORAGE_BASE_PATH}")
+        
+        # Inicializar descriptor de imágenes para generar descripciones automáticas
+        try:
+            image_descriptor = ImageDescriptor()
+            logger.info("Image description generation enabled with ImageDescriptor")
+        except Exception as e:
+            logger.warning(f"Failed to initialize image descriptor: {e}")
+            logger.warning("Continuing with image extraction only (no descriptions)")
+            
     except Exception as e:
         logger.warning(f"Failed to initialize image extractor: {e}")
         logger.warning("Continuing with text-only processing")
@@ -618,7 +629,177 @@ def insert_image_vectors_to_qdrant(image_files: List[str] = None):
     
     return result
 
+def generate_and_insert_image_descriptions():
+    """
+    Generar descripciones de imágenes usando ImageDescriptor e insertar en Qdrant
+    """
+    if not ENABLE_IMAGE_INGEST or not image_descriptor:
+        logger.info("Image description generation disabled or ImageDescriptor not available")
+        return {"total_inserted": 0, "total_skipped": 0, "success": True}
+    
+    from multimodal_schema import MultimodalPayload, create_deduplication_key
+    import glob
+    
+    # Buscar todas las imágenes extraídas
+    image_pattern = f"{STORAGE_BASE_PATH}/**/*.png"
+    image_files = glob.glob(image_pattern, recursive=True)
+    
+    if not image_files:
+        logger.info("No images found for description generation")
+        return {"total_inserted": 0, "total_skipped": 0, "success": True}
+    
+    logger.info(f"Starting image description generation for {len(image_files)} images")
+    
+    # Procesar imágenes en lotes
+    total_batches = (len(image_files) + BATCH_SIZE - 1) // BATCH_SIZE
+    logger.info(f"Processing image descriptions in {total_batches} batches of {BATCH_SIZE} each")
+    
+    total_inserted = 0
+    total_skipped = 0
+    total_description_errors = 0
+    
+    for i in range(0, len(image_files), BATCH_SIZE):
+        batch_num = (i // BATCH_SIZE) + 1
+        batch_files = image_files[i:i + BATCH_SIZE]
+        
+        logger.info(f"Processing image description batch {batch_num}/{total_batches} ({len(batch_files)} images)")
+        
+        try:
+            # Preparar información para el lote de descripciones
+            descriptions_data = []
+            batch_inserted = 0
+            batch_skipped = 0
+            
+            # Generar descripciones para cada imagen del lote
+            for image_file in batch_files:
+                try:
+                    # Extraer metadatos del path de la imagen
+                    path_parts = Path(image_file).parts
+                    doc_id = path_parts[-3]  # e.g., MU-EBROKER_CREACION_USUARIOS_WS
+                    page_dir = path_parts[-2]  # e.g., p5
+                    page_number = int(page_dir[1:])  # extraer número de página
+                    image_hash = Path(image_file).stem  # usar filename como hash
+                    
+                    # Crear metadata para el descriptor de imagen
+                    image_metadata = {
+                        'width': 800,  # Valor por defecto - podrías extraerlo si es necesario
+                        'height': 600,
+                        'doc_id': doc_id,
+                        'page_number': page_number,
+                        'hash': image_hash
+                    }
+                    
+                    # Generar descripción usando el método robusto con reintentos
+                    description = image_descriptor.describe_image_robust(
+                        image_path=image_file,
+                        image_metadata=image_metadata
+                    )
+                    
+                    if description:
+                        descriptions_data.append({
+                            'image_file': image_file,
+                            'description': description,
+                            'doc_id': doc_id,
+                            'page_number': page_number,
+                            'image_hash': image_hash,
+                            'metadata': image_metadata
+                        })
+                        logger.debug(f"Generated description for {image_file}: {len(description)} chars")
+                    else:
+                        total_description_errors += 1
+                        logger.warning(f"Failed to generate description for {image_file}")
+                        
+                except Exception as e:
+                    total_description_errors += 1
+                    logger.error(f"Error processing image {image_file}: {str(e)}")
+                    continue
+            
+            # Ahora crear embeddings para las descripciones válidas
+            if descriptions_data:
+                # Extraer solo las descripciones para generar embeddings
+                descriptions_text = [item['description'] for item in descriptions_data]
+                
+                # Generar embeddings para las descripciones
+                embeddings = emb.embed_documents(descriptions_text)
+                
+                # Crear puntos multimodales para Qdrant
+                points = []
+                
+                for j, (desc_data, embedding) in enumerate(zip(descriptions_data, embeddings)):
+                    try:
+                        # Crear payload multimodal para descripción de imagen
+                        multimodal_payload = MultimodalPayload.from_image_description(
+                            page_content=desc_data['description'],
+                            doc_id=desc_data['doc_id'],
+                            page_number=desc_data['page_number'],
+                            source_uri=f"{desc_data['doc_id']}.pdf",
+                            image_hash=desc_data['image_hash'],
+                            embedding_model=EMB_MODEL,
+                            # Ruta relativa de la imagen para referencia
+                            thumbnail_uri=str(Path(desc_data['image_file']).relative_to(Path(STORAGE_BASE_PATH)))
+                        )
+                        
+                        # Validar payload
+                        if not multimodal_payload.validate():
+                            logger.warning(f"Invalid image description payload for {desc_data['image_file']}, skipping")
+                            batch_skipped += 1
+                            continue
+                        
+                        # Crear punto para Qdrant usando UUID del payload
+                        point_id = multimodal_payload.id
+                        payload_dict = multimodal_payload.to_dict()
+                        
+                        points.append(models.PointStruct(
+                            id=point_id,
+                            vector=embedding,
+                            payload=payload_dict
+                        ))
+                        batch_inserted += 1
+                        
+                    except Exception as e:
+                        logger.error(f"Failed to create multimodal payload for image description {desc_data['image_file']}: {e}")
+                        batch_skipped += 1
+                        continue
+                
+                # Insertar lote en Qdrant
+                if points:
+                    client.upsert(collection_name=COLLECTION, points=points)
+                    logger.info(f"Image description batch {batch_num} inserted: {batch_inserted} points, skipped: {batch_skipped}")
+                else:
+                    logger.warning(f"Image description batch {batch_num} had no valid points to insert")
+                
+                total_inserted += batch_inserted
+                total_skipped += batch_skipped
+            
+        except Exception as e:
+            logger.error(f"Failed to process image description batch {batch_num}: {str(e)}")
+            # Continuar con el siguiente lote
+            continue
+    
+    # Mostrar métricas del ImageDescriptor
+    if image_descriptor:
+        metrics = image_descriptor.get_metrics()
+        logger.info(f"Image description metrics: {metrics}")
+    
+    logger.info(f"Image description insertion completed - inserted: {total_inserted}, skipped: {total_skipped}, errors: {total_description_errors}, total: {len(image_files)}")
+    
+    result = {
+        "total_inserted": total_inserted,
+        "total_skipped": total_skipped,
+        "total_description_errors": total_description_errors,
+        "success": total_inserted > 0 or len(image_files) == 0,
+        "total_processed": len(image_files)
+    }
+    
+    if total_inserted > 0:
+        logger.info(f"Successfully added {total_inserted} image description embeddings to collection '{COLLECTION}'")
+    
+    return result
+
 # Procesar imágenes después del texto
 retry_operation("Image vector insertion to Qdrant", insert_image_vectors_to_qdrant)
 
-logger.info(f"Ingestion completed successfully - collection: '{COLLECTION}', text chunks: {len(chunks)}, images processed")
+# Generar e insertar descripciones de imágenes
+retry_operation("Image description generation and insertion", generate_and_insert_image_descriptions)
+
+logger.info(f"Ingestion completed successfully - collection: '{COLLECTION}', text chunks: {len(chunks)}, images and descriptions processed")

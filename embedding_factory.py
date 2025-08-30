@@ -126,10 +126,10 @@ class EmbeddingFactory:
         """
         # Obtener configuración de variables de entorno si no se especifica
         if not model_name:
-            model_name = os.getenv("EMBEDDING_MODEL", "models/embedding-001")
+            model_name = os.getenv("EMBEDDING_MODEL", "jina-embeddings-v4")
         
         if not provider:
-            provider = os.getenv("EMBEDDING_PROVIDER", "google")
+            provider = os.getenv("EMBEDDING_PROVIDER", "jina")
         
         logger.info(f"Creating {provider} embedding with model: {model_name}")
         
@@ -203,7 +203,7 @@ class EmbeddingFactory:
     def get_model_dimensions(self, model_name: str, provider: str = None) -> int:
         """Obtiene las dimensiones del modelo especificado"""
         if not provider:
-            provider = os.getenv("EMBEDDING_PROVIDER", "google")
+            provider = os.getenv("EMBEDDING_PROVIDER", "jina")
         
         if provider not in self.SUPPORTED_MODELS:
             raise ValueError(f"Unsupported provider: {provider}. Supported: {list(self.SUPPORTED_MODELS.keys())}")
@@ -218,7 +218,7 @@ class EmbeddingFactory:
         elif provider == "jina":
             return 1024  # Jina v4 default optimizado
         
-        return 768  # Fallback general
+        return 1024  # Fallback general (Jina default)
     
     @classmethod
     def create_image_embedding(

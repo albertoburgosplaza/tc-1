@@ -449,6 +449,431 @@ docker update --memory=512m pyexec
 - Considerar SSD para volúmenes Docker
 - Optimizar reranking: ajustar `TOP_K_SEARCH` y `TOP_N_RERANK`
 
+## 📋 Flujo Completo de PDF a RAG Multimodal
+
+### Proceso de Ingesta de PDFs (ingest.py)
+
+#### 1. 📄 Extracción y Procesamiento de PDFs
+
+**Extracción de texto:**
+```python
+# 1. Validación automática de PDFs
+- Verificación de existencia, tamaño (<100MB), formato válido
+- Carga con PyPDFLoader de LangChain
+- Extracción de metadatos (título, autor, fecha de creación)
+
+# 2. Procesamiento por páginas
+- Asignación de metadatos mejorados: doc_id, title, page, source
+- Validación de contenido mínimo (>10 caracteres)
+- Filtrado de páginas vacías
+
+# 3. Chunking optimizado de texto
+- RecursiveCharacterTextSplitter
+- CHUNK_SIZE: 1200 caracteres
+- CHUNK_OVERLAP: 180 caracteres
+- Estadísticas: promedio, mínimo, máximo chunk size
+```
+
+**Extracción multimodal de imágenes:**
+```python
+# 1. Extracción con PyMuPDF (fitz)
+- extract_images_from_pdf() usa PyMuPDF para extraer imágenes embebidas
+- Formatos soportados: PNG, JPEG, WebP
+- Obtiene: dimensiones, bounding box, datos binarios, metadata
+
+# 2. Preprocesamiento inteligente de imágenes
+- _normalize_image_orientation(): Corrige orientación EXIF automáticamente
+- _resize_image(): Redimensiona manteniendo aspect ratio (máximo 1024px lado mayor)
+- _calculate_image_hash(): SHA-256 para deduplicación robusta
+
+# 3. Filtrado avanzado de imágenes significativas
+- Elimina imágenes < 50x50px (demasiado pequeñas)
+- Filtra aspect ratios extremos (>10:1, normalmente logos/líneas)
+- Descarta archivos < 500 bytes (probablemente corruptos)
+- Excluye headers/footers (15% superior/inferior de página)
+- Filtra baja complejidad visual (varianza de píxeles)
+- Deduplicación automática por hash SHA-256
+```
+
+**Almacenamiento estructurado:**
+```bash
+# Estructura de directorios generada automáticamente:
+/var/data/rag/images/
+└── {doc_id}/
+    └── p{page_number}/
+        ├── {hash}.png          # Imagen original procesada
+        └── thumbs/
+            └── {hash}.jpg      # Thumbnail optimizado (256px max)
+
+# Metadatos completos generados:
+- image_path, thumbnail_path (rutas absolutas)
+- image_uri, thumbnail_uri (rutas relativas para referencias)
+- width, height, bbox (coordenadas en página)
+- doc_id, page_number, image_index, hash SHA-256
+```
+
+#### 2. 🧮 Generación de Embeddings Multimodales
+
+**Configuración unificada de embeddings:**
+```python
+# Para texto (retrieval.query - consultas de usuario)
+task_config = {
+    "task_type": "retrieval.query",
+    "late_chunking": False,
+    "normalized": True  # Para usar DOT distance en Qdrant
+}
+
+# Para documentos/imágenes (retrieval.passage - contenido indexado)
+task_config = {
+    "task_type": "retrieval.passage", 
+    "late_chunking": True,  # Solo para chunks de texto grandes
+    "normalized": True      # Consistente con queries
+}
+
+# Modelos configurados:
+- Jina: jina-embeddings-v4 (1024 dimensiones, normalizado) - CONFIGURACIÓN ACTIVA
+- Nota: El sistema está configurado únicamente para Jina embeddings
+```
+
+**Procesamiento por lotes optimizado:**
+```python
+# Embeddings de texto (paralelo por chunks)
+texts = [doc.page_content for doc in batch]
+embeddings = emb.embed_documents(texts)  # API call a Jina
+
+# Embeddings de imágenes (paralelo por archivos)  
+embeddings = emb.embed_images(batch_image_files)  # API call a Jina
+# Procesa rutas de archivos PNG directamente
+# Mismo espacio vectorial que el texto para búsqueda híbrida
+```
+
+#### 3. 🗄️ Almacenamiento en Base de Datos Vectorial (Qdrant)
+
+**Configuración de colección multimodal:**
+```python
+# Configuración automática según proveedor de embeddings
+MULTIMODAL_COLLECTION_CONFIG = {
+    "collection_name": "rag_multimodal",
+    "distance": Distance.DOT,      # Para Jina (normalizado)
+    "vector_size": 1024,           # Jina embeddings-v4
+}
+
+# Índices de payload para búsqueda eficiente:
+- modality: keyword index ("text" | "image")
+- doc_id: keyword index (agrupación por documento)
+- page_number: integer index (búsqueda por página)
+- hash: keyword index (deduplicación rápida)
+- title, author: text index (búsqueda por metadatos)
+```
+
+**Estructura de payload unificada:**
+```python
+@dataclass
+class MultimodalPayload:
+    # Campos requeridos comunes
+    id: str                    # UUID único para cada vector
+    modality: Modality         # "text" | "image"
+    doc_id: str               # ID del documento padre
+    page_number: int          # Página en el documento
+    source_uri: str           # Archivo PDF original
+    hash: str                 # SHA-256 para deduplicación
+    embedding_model: str      # Modelo usado (jina-embeddings-v4)
+    created_at: str           # Timestamp ISO de inserción
+    
+    # Campos específicos de texto
+    page_content: str         # Contenido del chunk
+    content_preview: str      # Primeros 200 caracteres
+    
+    # Campos específicos de imagen  
+    thumbnail_uri: str        # Ruta relativa del PNG
+    width: int, height: int   # Dimensiones en píxeles
+    image_index: int          # Índice de imagen en la página
+    bbox: Dict                # Coordenadas: {"x0": float, "y0": float, "x1": float, "y1": float}
+    
+    # Campos opcionales comunes
+    title: str                # Título limpio del documento
+    author: str               # Autor extraído del PDF
+    creation_date: str        # Fecha de creación del PDF
+```
+
+**Inserción vectorial por lotes:**
+```python
+# Para texto: factory method optimizado
+multimodal_payload = MultimodalPayload.from_text_chunk(
+    page_content=text,
+    doc_id=metadata['doc_id'],
+    page_number=metadata['page'],
+    embedding_model="jina-embeddings-v4"
+)
+
+# Para imagen: factory method con metadatos completos
+multimodal_payload = MultimodalPayload.from_image_data(
+    image_data=b"placeholder",  # No se almacenan datos binarios
+    doc_id=doc_id,
+    page_number=page_number, 
+    thumbnail_uri=relative_path,
+    width=800, height=600,
+    embedding_model="jina-embeddings-v4"
+)
+
+# Inserción eficiente en lotes de 50 vectores
+client.upsert(collection_name="rag_multimodal", points=[
+    models.PointStruct(
+        id=payload.id,
+        vector=embedding,          # Vector 1024-dimensional
+        payload=payload.to_dict()  # Metadatos completos
+    )
+])
+```
+
+### Proceso de Retrieval Multimodal (app.py)
+
+#### 4. 🔍 Information Retrieval Híbrido
+
+**Búsqueda vectorial unificada:**
+```python
+class CustomQdrantRetriever:
+    def get_relevant_documents(self, query: str, k: int = 30):
+        # 1. Generar embedding de la query del usuario
+        query_embedding = self.embeddings.embed_query(query)  # Jina API
+        
+        # 2. Búsqueda vectorial híbrida en Qdrant
+        search_result = self.client.query_points(
+            collection_name="rag_multimodal",
+            query=query_embedding,
+            limit=k,                    # Búsqueda amplia inicial
+            with_payload=True           # Incluir todos los metadatos
+        )
+        
+        # 3. Procesar resultados por modalidad
+        documents = []
+        for result in search_result.points:
+            payload = result.payload
+            modality = payload.get('modality', 'text')
+            
+            if modality == 'image':
+                # Crear descripción contextual para imágenes
+                thumbnail_uri = payload.get('thumbnail_uri', '')
+                image_index = payload.get('image_index', 0)
+                width = payload.get('width', 0)
+                height = payload.get('height', 0)
+                
+                page_content = f"Imagen {image_index + 1} en página {payload.get('page_number', 'N/A')} (dimensiones: {width}x{height}px, thumbnail: {thumbnail_uri})"
+            
+            # Preservar metadatos completos + similarity score
+            metadata = payload.copy()
+            metadata['similarity_score'] = result.score
+            
+        return documents
+```
+
+**Reranking inteligente con Jina:**
+```python
+# Configuración de reranking en dos etapas
+RETRIEVAL_TOP_K = 30    # Búsqueda vectorial amplia
+RERANK_TOP_K = 15       # Selección final precisa
+
+if reranker and len(docs) > 1:
+    # Aplicar reranking semántico avanzado
+    reranked_docs, rerank_latency_ms = reranker.rerank_doc_objects(
+        query=query,
+        documents=docs,
+        top_n=RERANK_TOP_K
+    )
+    docs = reranked_docs
+    
+    # Log de mejoras de relevancia
+    for i, doc in enumerate(docs[:3], 1):
+        rerank_score = doc.metadata.get('rerank_score', 'N/A')
+        title = doc.metadata.get('title', 'Unknown')[:50]
+        logger.debug(f"Reranked doc {i}: {title} (score: {rerank_score})")
+```
+
+#### 5. 🧠 Generación RAG Multimodal con Gemini
+
+**Construcción de contexto híbrido:**
+```python
+# Contexto diferenciado por modalidad
+context_parts = []
+image_documents = []  # Tracking para procesamiento multimodal
+
+for i, doc in enumerate(docs):
+    doc_title = doc.metadata.get('title', 'Documento desconocido')
+    page_num = doc.metadata.get('page_number', 'N/A')
+    modality = doc.metadata.get('modality', 'text')
+    
+    if modality == 'image':
+        # Contexto enriquecido para imágenes
+        thumbnail_uri = doc.metadata.get('thumbnail_uri', '')
+        image_index = doc.metadata.get('image_index', 0)
+        width = doc.metadata.get('width', 0)
+        height = doc.metadata.get('height', 0)
+        
+        context_part = f"""DOCUMENTO {i+1}: {doc_title}
+PÁGINA: {page_num}
+TIPO: IMAGEN {image_index + 1}
+DIMENSIONES: {width}x{height}px
+UBICACIÓN: {thumbnail_uri}
+FUENTE: {doc.metadata.get('source_uri', '')}
+CONTENIDO: {doc.page_content}
+---"""
+        
+        # Guardar para procesamiento visual
+        image_documents.append({
+            'doc_index': i + 1,
+            'thumbnail_uri': thumbnail_uri,  # Ruta del PNG original
+            'title': doc_title,
+            'page': page_num,
+            'image_index': image_index
+        })
+    else:
+        # Contexto estándar para texto
+        context_part = f"""DOCUMENTO {i+1}: {doc_title}
+PÁGINA: {page_num}
+CONTENIDO:
+{doc.page_content}
+---"""
+    
+    context_parts.append(context_part)
+
+context = "\n\n".join(context_parts)
+```
+
+**Procesamiento visual con Gemini 2.5 Flash Lite:**
+```python
+if image_documents:  # Hay imágenes relevantes
+    logger.info(f"Preparando RAG multimodal con {len(image_documents)} imágenes")
+    
+    message_content = []
+    
+    # 1. Prompt textual con contexto híbrido
+    text_prompt = f"""{sistema_prompt}
+
+Contexto:
+{context}
+
+Historial:
+{historial_formateado}
+
+Pregunta: {query}
+
+Por favor analiza tanto el texto como las imágenes proporcionadas. Si las imágenes contienen gráficos, tablas o diagramas relevantes, descríbelos y úsalos en tu respuesta.
+
+Respuesta:"""
+    
+    message_content.append({
+        "type": "text",
+        "text": text_prompt
+    })
+    
+    # 2. Cargar y agregar imágenes (limitado a 5 más relevantes)
+    images_added = 0
+    max_images = 5
+    
+    for img_doc in image_documents[:max_images]:
+        # Cargar imagen desde almacenamiento
+        image_path = img_doc['thumbnail_uri']  # PNG original (no thumbnail)
+        image_base64 = load_image_as_base64(image_path)
+        
+        if image_base64:  # data:image/png;base64,iVBORw0KGgoAAAANSUhEU...
+            message_content.append({
+                "type": "image_url", 
+                "image_url": image_base64
+            })
+            images_added += 1
+            logger.info(f"Added image {images_added}: Doc {img_doc['doc_index']}, Page {img_doc['page']}")
+    
+    # 3. Invocar Gemini con contenido multimodal
+    human_message = HumanMessage(content=message_content)
+    resp = current_llm.invoke([human_message]).content.strip()
+```
+
+**Sistema de citas inline:**
+```python
+# 1. Extracción automática de documentos citados
+cited_doc_numbers = extract_cited_documents(response)  
+# Busca patrones: "DOCUMENTO 1", "DOCUMENTO 7"
+
+# 2. Mapeo secuencial para legibilidad
+citation_mapping = create_citation_mapping(cited_doc_numbers)  
+# {1: 1, 7: 2} - doc original -> número secuencial
+
+# 3. Reescritura con formato inline  
+processed_response = rewrite_document_references(response, citation_mapping)
+# "DOCUMENTO 1" → "[1]", "DOCUMENTO 7" → "[2]"
+
+# 4. Generación de referencias completas
+citations_text = generate_citations_for_cited_docs(docs, cited_doc_numbers, citation_mapping)
+
+# Formato final multimodal:
+"""
+Respuesta con citas [1] y [2] basada en el análisis de texto e imágenes.
+
+📚 Fuentes consultadas:
+[1] Manual de Usuario (pág. 5)
+[2] Imagen 2 en Configuración Avanzada (pág. 12) - 800x600px - thumbnail: config/p12/a1b2c3d4.png
+"""
+```
+
+### Flujo Completo Integrado
+
+```
+📄 PDF Input → 🔧 Extract → 🖼️ Process → 🧮 Embed → 🗄️ Store → 🔍 Retrieve → 🧠 Generate
+
+1. PDF Files (docs/)
+   ↓
+2. ingest.py
+   ├─ PyPDFLoader (extracción de texto por páginas)
+   ├─ PyMuPDF (extracción de imágenes embebidas)  
+   ├─ Validación + Filtrado inteligente
+   ├─ Chunking optimizado (1200/180 caracteres)
+   └─ Almacenamiento estructurado (/var/data/rag/images/)
+   ↓
+3. embedding_factory.py  
+   ├─ Jina API embeddings-v4 (texto + imágenes)
+   ├─ Configuración: task_type retrieval.passage/query
+   ├─ Normalización: True (DOT distance compatible)
+   └─ Procesamiento por lotes optimizado
+   ↓
+4. Qdrant Vector Database
+   ├─ Colección multimodal unificada (rag_multimodal)
+   ├─ Payload estructurado: MultimodalPayload
+   ├─ Índices optimizados: modality, doc_id, page_number  
+   └─ Deduplicación SHA-256 automática
+   ↓
+5. User Query → app.py
+   ↓
+6. CustomQdrantRetriever
+   ├─ embed_query(user_input) con Jina
+   ├─ query_points(qdrant) búsqueda híbrida
+   ├─ Jina Reranker (30→15 documentos)
+   └─ Contexto multimodal estructurado
+   ↓
+7. Google Gemini 2.5 Flash Lite
+   ├─ Prompt textual + Imágenes base64
+   ├─ Sistema prompt especializado multimodal
+   ├─ Procesamiento visual nativo
+   └─ Generación de citas DOCUMENTO N
+   ↓
+8. Post-processing
+   ├─ Extracción de documentos citados
+   ├─ Mapeo secuencial de citas
+   ├─ Reescritura inline [N]
+   └─ Referencias completas multimodales
+   ↓
+9. Final Response
+   ├─ Contenido híbrido (texto + visual)
+   ├─ Citas inline [1], [2], [3]
+   └─ Referencias: 📚 Fuentes consultadas con metadatos completos
+```
+
+Esta arquitectura permite un RAG verdaderamente multimodal donde:
+- ✅ **PDFs se procesan completamente** (texto + todas las imágenes)
+- ✅ **Búsquedas híbridas** encuentran contenido relevante independiente de modalidad
+- ✅ **Respuestas enriquecidas** que combinan información textual y visual
+- ✅ **Citas precisas** que referencian tanto texto como imágenes específicas
+- ✅ **Escalabilidad** através de APIs (Jina + Google) sin procesamiento local pesado
+
 ## 🧪 Testing
 
 ```bash

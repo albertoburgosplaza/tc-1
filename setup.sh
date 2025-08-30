@@ -403,7 +403,7 @@ show_final_status() {
     # Show LLM information
     echo "LLM PROVIDER:"
     echo "  🤖 Google Gemini 2.5 Flash Lite (API-based)"
-    echo "  📊 Embeddings: models/embedding-001"
+    echo "  📊 Embeddings: jina-embeddings-v4 (Jina AI)"
     echo ""
     
     # Show document count
