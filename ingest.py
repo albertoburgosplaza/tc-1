@@ -569,13 +569,34 @@ def generate_and_insert_image_descriptions():
                     page_number = int(page_dir[1:])  # extraer número de página
                     image_hash = Path(image_file).stem  # usar filename como hash
                     
+                    # Obtener dimensiones reales de la imagen
+                    from PIL import Image
+                    try:
+                        with Image.open(image_file) as img:
+                            width, height = img.size
+                    except Exception as e:
+                        logger.warning(f"Could not get image dimensions for {image_file}: {e}")
+                        width, height = 0, 0
+                    
+                    # Extraer image_index del nombre del archivo
+                    # El formato es: {hash}_img{index}.png
+                    filename = Path(image_file).name
+                    try:
+                        if '_img' in filename:
+                            image_index = int(filename.split('_img')[1].split('.')[0])
+                        else:
+                            image_index = 0
+                    except:
+                        image_index = 0
+                    
                     # Crear metadata para el descriptor de imagen
                     image_metadata = {
-                        'width': 800,  # Valor por defecto - podrías extraerlo si es necesario
-                        'height': 600,
+                        'width': width,
+                        'height': height,
                         'doc_id': doc_id,
                         'page_number': page_number,
-                        'hash': image_hash
+                        'hash': image_hash,
+                        'image_index': image_index
                     }
                     
                     # Generar descripción usando el método robusto con reintentos
@@ -620,6 +641,10 @@ def generate_and_insert_image_descriptions():
                 
                 for j, (desc_data, embedding) in enumerate(zip(descriptions_data, embeddings)):
                     try:
+                        # Generar título limpio desde doc_id (igual que para textos)
+                        clean_title = desc_data['doc_id'].replace('_', ' ').replace('-', ' ')
+                        clean_title = ' '.join(word.capitalize() for word in clean_title.split())
+                        
                         # Crear payload multimodal para descripción de imagen
                         multimodal_payload = MultimodalPayload.from_image_description(
                             page_content=desc_data['description'],
@@ -632,7 +657,12 @@ def generate_and_insert_image_descriptions():
                             thumbnail_uri=str(Path(desc_data['image_file']).relative_to(Path(STORAGE_BASE_PATH))),
                             # Nuevos campos requeridos
                             image_description=desc_data['description'],
-                            description_model=image_descriptor.model_name
+                            description_model=image_descriptor.model_name,
+                            # Añadir metadatos faltantes
+                            title=clean_title,
+                            width=desc_data['metadata'].get('width', 0),
+                            height=desc_data['metadata'].get('height', 0),
+                            image_index=desc_data['metadata'].get('image_index', 0)
                         )
                         
                         # Verificar deduplicación
