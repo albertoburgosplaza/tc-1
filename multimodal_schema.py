@@ -418,7 +418,7 @@ MULTIMODAL_COLLECTION_CONFIG = {
     "distance": None,  # Se configurará según proveedor (DOT para Jina, COSINE para otros)
     "payload_schema": {
         # Definir índices para campos comunes de búsqueda
-        "modality": {"type": "keyword", "index": True},
+        "modality": {"type": "keyword", "index": True},  # Critical for unified queries
         "doc_id": {"type": "keyword", "index": True}, 
         "page_number": {"type": "integer", "index": True},
         "source_uri": {"type": "keyword", "index": True},
@@ -430,6 +430,13 @@ MULTIMODAL_COLLECTION_CONFIG = {
         # Índices para campos de descripción de imagen
         "image_description": {"type": "text", "index": True},  # Búsqueda textual en descripciones
         "description_model": {"type": "keyword", "index": True},  # Filtrado por modelo
-        "description_generated_at": {"type": "datetime", "index": True}  # Filtrado por fecha de generación
+        "description_generated_at": {"type": "datetime", "index": True},  # Filtrado por fecha de generación
+        # Índices adicionales para optimización de queries híbridas
+        "width": {"type": "integer", "index": True},  # Filtrado por dimensiones de imagen
+        "height": {"type": "integer", "index": True},  # Filtrado por dimensiones de imagen  
+        "image_index": {"type": "integer", "index": True},  # Filtrado por posición de imagen en página
+        "thumbnail_uri": {"type": "keyword", "index": True},  # Para verificación de existencia de imágenes
+        # Optimización para content search (usado en page_content)
+        "content_preview": {"type": "text", "index": True}  # Índice en preview para búsquedas rápidas
     }
 }

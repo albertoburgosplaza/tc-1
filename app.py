@@ -267,7 +267,7 @@ class CustomQdrantRetriever:
         self.k = k
     
     def get_relevant_documents(self, query: str, k: int = None):
-        """Get relevant documents with proper multimodal metadata handling"""
+        """Get relevant documents with unified retrieval across text, image, and image_description modalities"""
         from langchain_core.documents import Document
         
         # Use provided k or default
@@ -276,7 +276,8 @@ class CustomQdrantRetriever:
         # Generate embedding for query
         query_embedding = self.embeddings.embed_query(query)
         
-        # Search in Qdrant
+        # Search in Qdrant - unified retrieval across ALL modalities (text, image, image_description)
+        # No modality filter applied - enables hybrid search across all content types
         search_result = self.client.query_points(
             collection_name=self.collection_name,
             query=query_embedding,
@@ -321,6 +322,35 @@ class CustomQdrantRetriever:
                     page_content = f"Imagen {image_index + 1} en página {payload.get('page_number', 'N/A')} (dimensiones: {width}x{height}px, thumbnail: {thumbnail_uri})"
                 else:
                     page_content = f"Imagen {image_index + 1} en página {payload.get('page_number', 'N/A')} (dimensiones: {width}x{height}px)"
+                    
+            elif modality == 'image_description':
+                # For image descriptions, preserve both text content and image metadata
+                # Extract image-specific metadata
+                thumbnail_uri = payload.get('thumbnail_uri', '')
+                width = payload.get('width', 0)
+                height = payload.get('height', 0)
+                image_index = payload.get('image_index', 0)
+                bbox = payload.get('bbox', {})
+                
+                # Extract description-specific metadata
+                image_description = payload.get('image_description', '')
+                description_model = payload.get('description_model', '')
+                description_generated_at = payload.get('description_generated_at', '')
+                
+                # Preserve all image_description metadata in metadata
+                metadata.update({
+                    'thumbnail_uri': thumbnail_uri,
+                    'image_index': image_index,
+                    'bbox': bbox,
+                    'width': width,
+                    'height': height,
+                    'image_description': image_description,
+                    'description_model': description_model,
+                    'description_generated_at': description_generated_at
+                })
+                
+                # page_content should already contain the AI-generated description
+                # Keep the original page_content which is the searchable text description
             
             # Create document with enhanced metadata
             doc = Document(
@@ -813,6 +843,8 @@ def generate_citations_for_cited_docs(docs: list, cited_doc_numbers: list[int], 
         if doc_index < len(docs):
             doc = docs[doc_index]
             title = doc.metadata.get('title', 'Documento desconocido')
+            if title is None:
+                title = 'Documento desconocido'
             page = doc.metadata.get('page_number', 'N/A')
             modality = doc.metadata.get('modality', 'text')
             
@@ -828,14 +860,26 @@ def generate_citations_for_cited_docs(docs: list, cited_doc_numbers: list[int], 
             if modality == 'image':
                 # Para imágenes, incluir metadatos específicos
                 image_index = doc.metadata.get('image_index', 0)
+                if image_index is None:
+                    image_index = 0
                 thumbnail_uri = doc.metadata.get('thumbnail_uri', '')
                 source_uri = doc.metadata.get('source_uri', '')
-                width = doc.metadata.get('width', 0)
-                height = doc.metadata.get('height', 0)
+                width = doc.metadata.get('width', 0) or 0
+                height = doc.metadata.get('height', 0) or 0
                 
                 citation = f"[{sequential_num}] Imagen {image_index + 1} en {display_title} (pág. {page}) - {width}x{height}px"
                 if thumbnail_uri:
                     citation += f" - thumbnail: {thumbnail_uri}"
+            elif modality == 'image_description':
+                # Para descripciones de imagen, incluir información de la descripción AI
+                image_index = doc.metadata.get('image_index', 0)
+                if image_index is None:
+                    image_index = 0
+                description_model = doc.metadata.get('description_model', 'IA')
+                width = doc.metadata.get('width', 0) or 0
+                height = doc.metadata.get('height', 0) or 0
+                
+                citation = f"[{sequential_num}] Descripción AI de Imagen {image_index + 1} en {display_title} (pág. {page}) - {width}x{height}px - Modelo: {description_model}"
             else:
                 # Para texto, mantener formato existente
                 citation = f"[{sequential_num}] {display_title} (pág. {page})"
@@ -869,6 +913,9 @@ def process_inline_citations(response: str, docs: list) -> tuple[str, str]:
     citations_text = generate_citations_for_cited_docs(docs, cited_doc_numbers, citation_mapping)
     
     logger.info(f"Citation mapping: {citation_mapping}")
+    
+    # Asegurar que citations_text nunca sea None
+    citations_text = citations_text or ""
     
     return processed_response + citations_text, citations_text
 
@@ -941,7 +988,7 @@ def maybe_python(user_text: str):
 # RAG
 
 def answer_with_rag(query: str, history: List[Tuple[str, str]]):
-    global rag_request_count, rag_latency_sum, error_count
+    global rag_request_count, rag_latency_sum, error_count, reranker
     
     logger.info(f"RAG query initiated - query_length: {len(query)}")
     rag_request_count += 1
@@ -960,10 +1007,47 @@ def answer_with_rag(query: str, history: List[Tuple[str, str]]):
         # Obtener estadísticas de caché antes de la consulta (deshabilitado temporalmente)
         cache_stats_before = {"hits": 0, "misses": 0}
         
+        logger.info(f"About to call retriever.get_relevant_documents() for query: {query[:50]}...")
         docs = retriever.get_relevant_documents(query)
+        logger.info(f"Successfully retrieved {len(docs)} documents from retriever")
+        
+        # Log detailed document analysis
+        doc_types = {}
+        logger.info(f"Retrieved {len(docs)} documents from retriever:")
+        for i, doc in enumerate(docs):
+            try:
+                if doc is None:
+                    logger.error(f"  Doc {i+1}: Document is None!")
+                    continue
+                if not hasattr(doc, 'metadata'):
+                    logger.error(f"  Doc {i+1}: Document has no metadata attribute! Type: {type(doc)}")
+                    continue
+                if doc.metadata is None:
+                    logger.error(f"  Doc {i+1}: Document metadata is None!")
+                    continue
+                    
+                modality = doc.metadata.get('modality', 'unknown')
+                doc_id = doc.metadata.get('doc_id', 'unknown')
+                page_num = doc.metadata.get('page_number', 'N/A')
+                title = doc.metadata.get('title', 'Unknown')
+                title = title[:30] if title else 'Unknown'
+                content_length = len(doc.page_content) if doc.page_content else 0
+                
+                doc_types[modality] = doc_types.get(modality, 0) + 1
+                
+                logger.info(f"  Doc {i+1}: modality={modality}, doc_id={doc_id}, page={page_num}, "
+                           f"title='{title}', content_len={content_length}")
+            except Exception as e:
+                logger.error(f"  Doc {i+1}: Error processing document: {e}, doc={doc}")
+        
+        try:
+            logger.info(f"Document type summary: {doc_types}")
+        except Exception as e:
+            logger.error(f"Error logging doc_types: {e}, doc_types={doc_types}")
         
         # Aplicar reranking si está habilitado
         rerank_latency_ms = 0.0
+        logger.info(f"DEBUG: reranker={reranker}, type={type(reranker)}, len(docs)={len(docs)}")
         if reranker and len(docs) > 1:
             try:
                 logger.info(f"Applying reranking: {len(docs)} → {RERANK_TOP_K} docs")
@@ -972,13 +1056,45 @@ def answer_with_rag(query: str, history: List[Tuple[str, str]]):
                     documents=docs,
                     top_n=RERANK_TOP_K
                 )
+                logger.info(f"Reranker returned: type={type(reranked_docs)}, length={len(reranked_docs) if reranked_docs else 'None'}")
+                logger.info(f"Reranker latency: {rerank_latency_ms}")
+                
+                # Validar que el reranker devolvió resultados válidos
+                if not reranked_docs or not isinstance(reranked_docs, list):
+                    raise ValueError(f"Reranker returned invalid results: {type(reranked_docs)}")
+                
                 docs = reranked_docs
-                logger.info(f"Reranking completed: {len(docs)} docs selected, latency: {rerank_latency_ms:.2f}ms")
+                try:
+                    logger.info(f"Reranking completed: {len(docs)} docs selected, latency: {rerank_latency_ms:.2f}ms")
+                except Exception as e:
+                    logger.error(f"ERROR calculating len(docs): {e}, docs type: {type(docs)}, docs: {docs}")
+                    raise
+                
+                # CRITICAL DEBUG: Check docs state before loop
+                try:
+                    logger.info(f"DEBUG: docs type={type(docs)}, docs is None={docs is None}")
+                    if docs is not None:
+                        logger.info(f"DEBUG: docs length={len(docs)}, first doc type={type(docs[0]) if len(docs) > 0 else 'empty'}")
+                except Exception as e:
+                    logger.error(f"ERROR in debug logs: {e}")
                 
                 # Log reranking scores for debugging
-                for i, doc in enumerate(docs[:3], 1):
+                try:
+                    docs_subset = docs[:3] if docs and hasattr(docs, '__getitem__') else []
+                except Exception as e:
+                    logger.error(f"ERROR getting docs subset: {e}, docs type: {type(docs)}")
+                    docs_subset = []
+                
+                for i, doc in enumerate(docs_subset, 1):
+                    if doc is None:
+                        logger.error(f"Reranked doc {i} is None!")
+                        continue
+                    if not hasattr(doc, 'metadata') or doc.metadata is None:
+                        logger.error(f"Reranked doc {i} has no metadata! Type: {type(doc)}")
+                        continue
                     score = doc.metadata.get('rerank_score', 'N/A')
-                    title = doc.metadata.get('title', 'Unknown')[:50]
+                    title = doc.metadata.get('title', 'Unknown')
+                    title = title[:50] if title else 'Unknown'
                     logger.debug(f"Reranked doc {i}: {title} (score: {score})")
                     
             except Exception as e:
@@ -1001,6 +1117,8 @@ def answer_with_rag(query: str, history: List[Tuple[str, str]]):
         
         for i, d in enumerate(docs):
             doc_title = d.metadata.get('title', 'Documento desconocido')
+            if doc_title is None:
+                doc_title = 'Documento desconocido'
             page_num = d.metadata.get('page_number', 'N/A')
             modality = d.metadata.get('modality', 'text')
             
@@ -1008,9 +1126,11 @@ def answer_with_rag(query: str, history: List[Tuple[str, str]]):
             if modality == 'image':
                 # Para imágenes, incluir metadatos completos
                 thumbnail_uri = d.metadata.get('thumbnail_uri', '')
-                image_index = d.metadata.get('image_index', 0)
-                width = d.metadata.get('width', 0)
-                height = d.metadata.get('height', 0)
+                image_index = d.metadata.get('image_index')
+                if image_index is None:
+                    image_index = 0
+                width = d.metadata.get('width', 0) or 0
+                height = d.metadata.get('height', 0) or 0
                 bbox = d.metadata.get('bbox', {})
                 source_uri = d.metadata.get('source_uri', '')
                 
@@ -1033,6 +1153,38 @@ DIMENSIONES: {width}x{height}px
 UBICACIÓN: {thumbnail_uri}
 FUENTE: {source_uri}
 CONTENIDO: {d.page_content.strip()}
+---"""
+            elif modality == 'image_description':
+                # Para descripciones de imagen, incluir metadatos de imagen y descripción
+                thumbnail_uri = d.metadata.get('thumbnail_uri', '')
+                image_index = d.metadata.get('image_index')
+                if image_index is None:
+                    image_index = 0
+                width = d.metadata.get('width', 0) or 0
+                height = d.metadata.get('height', 0) or 0
+                image_description = d.metadata.get('image_description', '')
+                description_model = d.metadata.get('description_model', '')
+                source_uri = d.metadata.get('source_uri', '')
+                
+                # También agregar a image_documents si tiene imagen asociada
+                if thumbnail_uri:
+                    image_documents.append({
+                        'doc_index': i + 1,
+                        'thumbnail_uri': thumbnail_uri,
+                        'source_uri': source_uri,
+                        'title': doc_title,
+                        'page': page_num,
+                        'image_index': image_index
+                    })
+                
+                context_part = f"""DOCUMENTO {i+1}: {doc_title}
+PÁGINA: {page_num}
+TIPO: DESCRIPCIÓN DE IMAGEN {image_index + 1}
+DIMENSIONES: {width}x{height}px
+MODELO DESCRIPCIÓN: {description_model}
+UBICACIÓN IMAGEN: {thumbnail_uri}
+FUENTE: {source_uri}
+CONTENIDO (Descripción AI): {d.page_content.strip()}
 ---"""
             else:
                 # Para texto, mantener formato existente

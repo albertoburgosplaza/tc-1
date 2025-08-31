@@ -221,6 +221,12 @@ class JinaReranker:
                 has_image = True
             elif explicit_modality == "text":
                 has_text = True
+            elif explicit_modality == "image_description":
+                # image_description is primarily text but may have associated image
+                has_text = True
+                # Check if it also has image reference for mixed modality
+                if metadata.get("thumbnail_uri"):
+                    has_image = True
             
             # Buscar campos de imagen en metadata del esquema multimodal
             image_fields = [
@@ -665,11 +671,29 @@ class JinaReranker:
         # Combinar resultados ajustando índices globales
         for chunk_idx, (results, offset) in enumerate(zip(chunk_results, chunk_offsets)):
             for result in results:
-                # Ajustar índice global
-                result_copy = result.copy()
-                result_copy["index"] = result["index"] + offset
-                result_copy["chunk_id"] = chunk_idx
-                all_results.append(result_copy)
+                if not isinstance(result, dict):
+                    logger.warning(f"Invalid result type in chunk {chunk_idx}: {type(result)}")
+                    continue
+                    
+                # Verificar que el índice sea válido
+                if "index" not in result or result["index"] is None:
+                    logger.warning(f"Missing or None index in result: {result}")
+                    continue
+                    
+                try:
+                    # Ajustar índice global
+                    result_copy = result.copy()
+                    result_copy["index"] = result["index"] + offset
+                    result_copy["chunk_id"] = chunk_idx
+                    all_results.append(result_copy)
+                except (TypeError, ValueError) as e:
+                    logger.warning(f"Error adjusting index for result {result}: {e}")
+                    continue
+        
+        # Verificar que tenemos resultados antes de ordenar
+        if not all_results:
+            logger.warning("No valid results after combining chunks")
+            return []
         
         # Ordenar por score descendente
         score_key = "relevance_score" if "relevance_score" in all_results[0] else "score"
@@ -816,23 +840,41 @@ class JinaReranker:
             # Hacer reranking
             results, latency_ms = self.rerank(query, normalized_docs, top_n, return_documents=False)
             
+            # Verificar que results es válido
+            if results is None or not isinstance(results, list):
+                logger.warning(f"Rerank returned invalid results: {type(results)}, using original order")
+                return documents[:top_n], latency_ms
+            
             # Reordenar documentos originales
             reordered_docs = []
             for result in results:
+                if not isinstance(result, dict) or "index" not in result:
+                    logger.warning(f"Invalid result format: {result}, skipping")
+                    continue
+                
                 doc_idx = result["index"]
-                if doc_idx < len(documents):
-                    doc = documents[doc_idx]
+                if doc_idx is None:
+                    logger.warning(f"Result has None index: {result}, skipping")
+                    continue
                     
-                    # Añadir rerank_score a metadata si es posible
-                    score = result.get("relevance_score", result.get("score", 0))
-                    if hasattr(doc, 'metadata') and isinstance(doc.metadata, dict):
-                        doc.metadata["rerank_score"] = score
-                    elif isinstance(doc, dict):
-                        if "metadata" not in doc:
-                            doc["metadata"] = {}
-                        doc["metadata"]["rerank_score"] = score
-                    
-                    reordered_docs.append(doc)
+                try:
+                    if doc_idx < len(documents):
+                        doc = documents[doc_idx]
+                        
+                        # Añadir rerank_score a metadata si es posible
+                        score = result.get("relevance_score", result.get("score", 0))
+                        if hasattr(doc, 'metadata') and isinstance(doc.metadata, dict):
+                            doc.metadata["rerank_score"] = score
+                        elif isinstance(doc, dict):
+                            if "metadata" not in doc:
+                                doc["metadata"] = {}
+                            doc["metadata"]["rerank_score"] = score
+                        
+                        reordered_docs.append(doc)
+                    else:
+                        logger.warning(f"Document index {doc_idx} out of range (max: {len(documents)-1})")
+                except (TypeError, ValueError) as e:
+                    logger.warning(f"Error processing result index {doc_idx}: {e}")
             
             return reordered_docs, latency_ms
             
