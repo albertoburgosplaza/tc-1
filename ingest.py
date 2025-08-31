@@ -629,7 +629,10 @@ def generate_and_insert_image_descriptions():
                             image_hash=desc_data['image_hash'],
                             embedding_model=EMB_MODEL,
                             # Ruta relativa de la imagen para referencia
-                            thumbnail_uri=str(Path(desc_data['image_file']).relative_to(Path(STORAGE_BASE_PATH)))
+                            thumbnail_uri=str(Path(desc_data['image_file']).relative_to(Path(STORAGE_BASE_PATH))),
+                            # Nuevos campos requeridos
+                            image_description=desc_data['description'],
+                            description_model=image_descriptor.model_name
                         )
                         
                         # Verificar deduplicación
@@ -643,7 +646,11 @@ def generate_and_insert_image_descriptions():
                         
                         # Validar payload
                         if not multimodal_payload.validate():
-                            logger.warning(f"Invalid image description payload for {desc_data['image_file']}, skipping")
+                            logger.warning(f"Invalid image description payload for {desc_data['image_file']}")
+                            logger.warning(f"  - image_description: {multimodal_payload.image_description is not None and len(multimodal_payload.image_description.strip()) > 0 if multimodal_payload.image_description else False}")
+                            logger.warning(f"  - description_model: {multimodal_payload.description_model is not None and len(multimodal_payload.description_model.strip()) > 0 if multimodal_payload.description_model else False}")
+                            logger.warning(f"  - page_content: {multimodal_payload.page_content is not None and len(multimodal_payload.page_content.strip()) > 0 if multimodal_payload.page_content else False}")
+                            logger.warning(f"Skipping invalid payload")
                             batch_skipped += 1
                             continue
                         

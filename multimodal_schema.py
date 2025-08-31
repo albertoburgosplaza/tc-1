@@ -67,6 +67,11 @@ class MultimodalPayload:
     image_index: Optional[int] = None  # Índice de imagen en la página
     bbox: Optional[Dict[str, float]] = None  # {"x0": float, "y0": float, "x1": float, "y1": float}
     
+    # Campos específicos de descripción de imagen (requeridos para modality=image_description)
+    image_description: Optional[str] = None  # Descripción generada por IA
+    description_model: Optional[str] = None  # Modelo que generó la descripción
+    description_generated_at: Optional[str] = None  # Timestamp de generación
+    
     # Campos opcionales comunes
     title: Optional[str] = None
     author: Optional[str] = None
@@ -203,6 +208,9 @@ class MultimodalPayload:
         image_hash: str,
         thumbnail_uri: str,
         embedding_model: str,
+        image_description: str,
+        description_model: str,
+        description_generated_at: Optional[str] = None,
         width: Optional[int] = None,
         height: Optional[int] = None,
         image_index: Optional[int] = None,
@@ -223,6 +231,9 @@ class MultimodalPayload:
             image_hash: Hash SHA-256 de la imagen original
             thumbnail_uri: Ruta del thumbnail de la imagen
             embedding_model: Modelo usado para embeddings de texto
+            image_description: Descripción de la imagen generada por IA (requerido)
+            description_model: Modelo que generó la descripción (requerido)
+            description_generated_at: Timestamp de generación (opcional, se genera automáticamente)
             width: Ancho en píxeles (opcional, para referencia)
             height: Alto en píxeles (opcional, para referencia)
             image_index: Índice de imagen en la página (opcional)
@@ -234,6 +245,10 @@ class MultimodalPayload:
         """
         # Generar UUID único
         vector_id = str(uuid.uuid4())
+        
+        # Generar timestamp automáticamente si no se proporciona
+        if description_generated_at is None:
+            description_generated_at = datetime.now().isoformat()
         
         # Crear preview del contenido (primeros 200 chars)
         content_preview = page_content[:200] + "..." if len(page_content) > 200 else page_content
@@ -257,73 +272,9 @@ class MultimodalPayload:
             title=title,
             author=author,
             creation_date=creation_date,
-            **kwargs
-        )
-    
-    @classmethod
-    def from_image_description(
-        cls,
-        page_content: str,
-        doc_id: str,
-        page_number: int,
-        source_uri: str,
-        image_hash: str,
-        thumbnail_uri: str,
-        embedding_model: str,
-        width: Optional[int] = None,
-        height: Optional[int] = None,
-        image_index: Optional[int] = None,
-        bbox: Optional[Dict[str, float]] = None,
-        title: Optional[str] = None,
-        author: Optional[str] = None,
-        creation_date: Optional[str] = None,
-        **kwargs
-    ) -> 'MultimodalPayload':
-        """
-        Crea payload para descripción de imagen.
-        
-        Args:
-            page_content: Descripción textual de la imagen generada por AI
-            doc_id: Identificador del documento
-            page_number: Número de página
-            source_uri: Ruta del archivo fuente
-            image_hash: Hash SHA-256 de la imagen original
-            thumbnail_uri: Ruta del thumbnail de la imagen
-            embedding_model: Modelo usado para embeddings de texto
-            width: Ancho en píxeles (opcional, para referencia)
-            height: Alto en píxeles (opcional, para referencia)
-            image_index: Índice de imagen en la página (opcional)
-            bbox: Bounding box en la página (opcional)
-            title: Título del documento (opcional)
-            author: Autor del documento (opcional)
-            creation_date: Fecha de creación original (opcional)
-            **kwargs: Otros campos opcionales
-        """
-        # Generar UUID único
-        vector_id = str(uuid.uuid4())
-        
-        # Crear preview del contenido (primeros 200 chars)
-        content_preview = page_content[:200] + "..." if len(page_content) > 200 else page_content
-        
-        return cls(
-            id=vector_id,
-            modality=Modality.IMAGE_DESCRIPTION,
-            doc_id=doc_id,
-            page_number=page_number,
-            source_uri=source_uri,
-            hash=image_hash,  # Usar hash de la imagen original
-            embedding_model=embedding_model,
-            created_at=datetime.now().isoformat(),
-            page_content=page_content,
-            content_preview=content_preview,
-            thumbnail_uri=thumbnail_uri,
-            width=width,
-            height=height,
-            image_index=image_index,
-            bbox=bbox,
-            title=title,
-            author=author,
-            creation_date=creation_date,
+            image_description=image_description,
+            description_model=description_model,
+            description_generated_at=description_generated_at,
             **kwargs
         )
     
@@ -358,7 +309,26 @@ class MultimodalPayload:
                    self.width > 0 and self.height > 0 and self.image_index >= 0
                    
         elif self.modality == Modality.IMAGE_DESCRIPTION:
-            return self.page_content is not None and len(self.page_content.strip()) > 0
+            # Validar campos básicos de contenido
+            content_valid = self.page_content is not None and len(self.page_content.strip()) > 0
+            
+            # Validar campos específicos de descripción de imagen
+            description_valid = (
+                self.image_description is not None and 
+                len(self.image_description.strip()) > 0 and
+                self.description_model is not None and 
+                len(self.description_model.strip()) > 0
+            )
+            
+            # Validar formato de timestamp si está presente
+            timestamp_valid = True
+            if self.description_generated_at is not None:
+                try:
+                    datetime.fromisoformat(self.description_generated_at.replace('Z', '+00:00'))
+                except ValueError:
+                    timestamp_valid = False
+            
+            return content_valid and description_valid and timestamp_valid
         
         return False
 
@@ -414,19 +384,15 @@ class SchemaValidator:
             bool: True si es válido
         """
         try:
-            # Intentar crear objeto MultimodalPayload
-            if payload.get('modality') == Modality.TEXT.value:
-                MultimodalPayload(**{k: v for k, v in payload.items() 
-                                   if k in MultimodalPayload.__dataclass_fields__})
-            elif payload.get('modality') == Modality.IMAGE.value:
-                MultimodalPayload(**{k: v for k, v in payload.items()
-                                   if k in MultimodalPayload.__dataclass_fields__})
-            elif payload.get('modality') == Modality.IMAGE_DESCRIPTION.value:
-                MultimodalPayload(**{k: v for k, v in payload.items()
-                                   if k in MultimodalPayload.__dataclass_fields__})
-            else:
-                return False
-            return True
+            # Intentar crear objeto MultimodalPayload y validarlo
+            filtered_payload = {k: v for k, v in payload.items() 
+                              if k in MultimodalPayload.__dataclass_fields__}
+            
+            multimodal_obj = MultimodalPayload(**filtered_payload)
+            
+            # Usar el método validate() del objeto para validación específica por modalidad
+            return multimodal_obj.validate()
+            
         except (TypeError, ValueError):
             return False
 
@@ -460,6 +426,10 @@ MULTIMODAL_COLLECTION_CONFIG = {
         "embedding_model": {"type": "keyword", "index": True},
         "created_at": {"type": "datetime", "index": True},
         "title": {"type": "text", "index": True},
-        "author": {"type": "text", "index": True}
+        "author": {"type": "text", "index": True},
+        # Índices para campos de descripción de imagen
+        "image_description": {"type": "text", "index": True},  # Búsqueda textual en descripciones
+        "description_model": {"type": "keyword", "index": True},  # Filtrado por modelo
+        "description_generated_at": {"type": "datetime", "index": True}  # Filtrado por fecha de generación
     }
 }
